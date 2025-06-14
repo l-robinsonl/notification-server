@@ -1,6 +1,6 @@
 # WebSocket Notification Server
 
-(Will be) A production-grade, enterprise-ready WebSocket notification server written in Go. Features JWT authentication, team-based message routing, and seamless integration with existing APIs and frontends. Currently only REST->notification-server->WebSockets workflow has been tested. WebSocket->WebSocket has not.  
+(Will be) A production-grade, enterprise-ready WebSocket notification server written in Go. Features JWT authentication, team-based message routing, and seamless integration with existing APIs and frontends. Currently only REST->notification-server->WebSockets workflow has been tested. WebSocket->WebSocket is in progress and untested.  
 
 ## Features
 
