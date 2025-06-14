@@ -1,89 +1,39 @@
-# WebSocket Server
+# WebSocket Notification Server
 
-A high-performance WebSocket server written in Go built to integrate with any ui and api.
-Super easy to extend or customize.
+(Will be) A production-grade, enterprise-ready WebSocket notification server written in Go. Features JWT authentication, team-based message routing, and seamless integration with existing APIs and frontends. Currently only REST->notification-server->WebSockets workflow has been tested. WebSocket->WebSocket has not.  
 
 ## Features
 
-- REST endpoint for sending messages to specific users or broadcasting to teams
-- WebSocket connections for real-time message delivery
-- Team and user scoping for message routing
-- Heartbeat mechanism to ensure connections stay alive
+### Core Functionality
+- **JWT Authentication** - Secure token validation with your existing backend
+- **Team-based Message Routing** - Isolated notifications per team/organization
+- **Real-time WebSocket Connections** - Instant message delivery without polling
+- **REST API for Message Sending** - Easy integration with existing backend services
+- **Auto-reconnection & Team Switching** - Seamless user experience when changing contexts
+
+### Enterprise Ready
+- **Connection Management** - Automatic cleanup and heartbeat monitoring  
+- **Scalable Architecture** - Hub-based message distribution
+- **Production Logging** - Comprehensive debug and monitoring capabilities
+- **CORS Support** - Ready for cross-origin frontend integration
+- **Graceful Error Handling** - Robust connection failure recovery
 
 ## Requirements
 
-- Go 1.21.5 or later
+- Go 1.21+ 
+- Access to your authentication backend API
 
-## Installation
+## Quick Start
 
-\`\`\`bash
-# Clone the repository
+```bash
+# Clone and setup
 git clone <repository-url>
-cd websocket-server
+cd notification-server/src
 
-# Install dependencies
+# Install dependencies  
 go mod download
 
-# Build the server
-go build -o websocket-server .
-\`\`\`
+# Run the server
+PORT=8081 go run ./
 
-## Running the Server
-
-\`\`\`bash
-# Run directly
-./websocket-server
-
-# Or with Docker
-docker build -t websocket-server .
-docker run -p 8080:8080 websocket-server
-\`\`\`
-
-## API Documentation
-
-### WebSocket Connection
-
-Connect to the WebSocket server:
-
-\`\`\`
-GET /ws?team_id=<team_id>&user_id=<user_id>
-\`\`\`
-
-Parameters:
-- `team_id`: The team ID the user belongs to
-- `user_id`: The user's ID
-
-### Send Message Endpoint
-
-Send a message to a specific user or broadcast to a team:
-
-\`\`\`
-POST /send
-\`\`\`
-
-Request Body:
-\`\`\`json
-{
-  "team_id": "team123",
-  "user_id": "sender456",
-  "target_user_id": "recipient789",
-  "message_type": "notification",
-  "content": "Hello, this is a test message",
-  "broadcast": false
-}
-\`\`\`
-
-Parameters:
-- `team_id`: The team ID
-- `user_id`: The sender's user ID
-- `target_user_id`: (Optional) The recipient's user ID
-- `message_type`: Type of message
-- `content`: Message content
-- `broadcast`: If true, sends to all users in the team (ignores target_user_id)
-
-Response:
-\`\`\`json
-{
-  "success": true,
-  "delivered": 1
-}
+# Server starts on http://localhost:8081
