@@ -1,6 +1,7 @@
 # WebSocket Server
 
-A high-performance WebSocket server written in Go that integrates with Django applications.
+A high-performance WebSocket server written in Go built to integrate with any ui and api.
+Super easy to extend or customize.
 
 ## Features
 
