@@ -1,0 +1,46 @@
+# local_settings.yaml - WebSocket Notification Server Configuration
+environment:
+  mode: "development"           # "development" or "production"
+  allow_all_origins: true       # Allow all CORS origins in development
+  enable_fake_auth: true        # Enable fake authentication for testing
+
+server:
+  port: "8081"
+  read_timeout: 10s
+  write_timeout: 10s
+  idle_timeout: 120s
+  allowed_origins:
+    - "http://localhost:3000"
+    - "http://localhost:8000"
+    - "https://api.pivotcx.io"
+    - "http://localhost:8080"
+    - "http://localhost"
+
+websocket:
+  write_wait: 10s
+  pong_wait: 60s
+  ping_period: 54s  # Should be (pong_wait * 9) / 10
+  max_message_size: 524288  # 512KB
+  read_deadline: 30s
+  buffer_size:
+    read: 1024
+    write: 1024
+
+security:
+  api_key: "lD8Z0Nu+Afezs+jQugR+B59klTtmFDlv+xh225oAwhs="
+
+backend:
+  url: "http://localhost:8000"
+  timeout: 10s
+
+limits:
+  max_clients_per_team: 1000
+  send_channel_buffer: 256
+
+circuit_breaker:
+  threshold: 5        # Number of failures before opening circuit
+  timeout: 60s        # How long to wait before trying again
+
+logging:
+  level: "info"       # debug, info, warn, error
+  format: "text"      # text or json
