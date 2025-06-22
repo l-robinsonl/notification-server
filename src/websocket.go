@@ -59,7 +59,7 @@ func (cb *CircuitBreaker) Call(fn func() error) error {
 // Client represents a connected websocket client
 type Client struct {
 	hub             *Hub
-	conn            *websocket.Conn
+	conn            Conn 
 	send            chan []byte
 	teamID          string
 	userID          string

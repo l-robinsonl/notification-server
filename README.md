@@ -24,19 +24,14 @@ cd websocket-server
 go mod download
 
 # Build the server
-go build -o websocket-server .
+go build -o engage-notifications .
 \`\`\`
 
 ## Running the Server
 
 \`\`\`bash
 # Run directly
-./websocket-server
-
-# Or with Docker
-docker build -t websocket-server .
-docker run -p 8080:8080 websocket-server
-\`\`\`
+go run ./engage-notifications/src
 
 ## API Documentation
 
@@ -63,8 +58,8 @@ POST /send
 Request Body:
 \`\`\`json
 {
-  "team_id": "team123",
-  "user_id": "sender456",
+  "target_team_id": "team123",
+  "sender_user_id": "sender456",
   "target_user_id": "recipient789",
   "message_type": "notification",
   "content": "Hello, this is a test message",
@@ -73,8 +68,8 @@ Request Body:
 \`\`\`
 
 Parameters:
-- `team_id`: The team ID
-- `user_id`: The sender's user ID
+- `target_team_id`: The team ID
+- `sender_user_id`: The sender's user ID
 - `target_user_id`: (Optional) The recipient's user ID
 - `message_type`: Type of message
 - `content`: Message content
