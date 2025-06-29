@@ -1,4 +1,4 @@
-// handlers_test.go - Fixed version
+// handlers_test.go - Updated for new server behavior
 package main
 
 import (
@@ -28,8 +28,16 @@ func TestHandleSendMessage(t *testing.T) {
 		expectSendToUser bool
 	}{
 		{
-			name:           "Success - Broadcast Message",
+			name:           "Success - Global Broadcast Message",
 			requestBody:    `{"message_type": "system_alert", "body": "server is restarting", "broadcast": true}`,
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"delivered":1`,
+			expectBroadcast: true,
+			expectSendToUser: false,
+		},
+		{
+			name:           "Success - Team Broadcast Message",
+			requestBody:    `{"target_team_id": "team-1", "message_type": "system_alert", "body": "team announcement", "broadcast": true}`,
 			expectedStatus: http.StatusOK,
 			expectedBody:   `"delivered":1`,
 			expectBroadcast: true,
@@ -63,7 +71,7 @@ func TestHandleSendMessage(t *testing.T) {
 			name:           "Failure - Conflicting Broadcast and UserID",
 			requestBody:    `{"broadcast": true, "target_user_id": "user-1", "message_type": "test"}`,
 			expectedStatus: http.StatusBadRequest,
-			expectedBody:   `Cannot specify TeamID or TargetUserID when Broadcast is true`,
+			expectedBody:   `Cannot specify TargetUserID when Broadcast is true`, // Updated error message
 			expectBroadcast: false,
 			expectSendToUser: false,
 		},

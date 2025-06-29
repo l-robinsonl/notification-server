@@ -176,19 +176,21 @@ func handleSendMessage(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate request parameters
 	if req.Broadcast {
-		// If the message is a broadcast, no other targeting parameters are allowed.
-		if req.TargetTeamID != "" || req.TargetUserID != "" {
-			http.Error(w, "Cannot specify TeamID or TargetUserID when Broadcast is true", http.StatusBadRequest)
-			return
-		}
+			// For broadcasts, TargetUserID is not allowed (broadcasts can't target individual users)
+			if req.TargetUserID != "" {
+					http.Error(w, "Cannot specify TargetUserID when Broadcast is true", http.StatusBadRequest)
+					return
+			}
+			// TargetTeamID is optional for broadcasts:
+			// - Empty TargetTeamID = Global broadcast (all teams)
+			// - Specified TargetTeamID = Team broadcast (specific team only)
 	} else {
-		// If it's not a broadcast, a TeamID and UserID are required.
-		if req.TargetTeamID == "" || req.TargetUserID == "" {
-			http.Error(w, "Must specify a TeamID and TargetUserID for non-broadcast messages", http.StatusBadRequest)
-			return
-		}
+			// If it's not a broadcast, a TeamID and UserID are required for direct messages
+			if req.TargetTeamID == "" || req.TargetUserID == "" {
+					http.Error(w, "Must specify a TeamID and TargetUserID for non-broadcast messages", http.StatusBadRequest)
+					return
+			}
 	}
 
 	// Create the message
@@ -205,10 +207,17 @@ func handleSendMessage(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 	// Determine delivery method based on request parameters
 	if req.Broadcast {
-		// Broadcast to ALL teams (global broadcast)
-		delivered = hub.broadcastToAllTeams(messageJSON)
-		success = delivered > 0
-		log.Printf("🌍 Global broadcast message: %d recipients across all teams", delivered)
+		if req.TargetTeamID != "" {
+			// Team-specific broadcast: send to all users in the specified team
+			delivered = hub.broadcastToTeam(req.TargetTeamID, messageJSON)
+			success = delivered > 0
+			log.Printf("🎯 Team broadcast to %s: %d recipients", req.TargetTeamID, delivered)
+		} else {
+			// Global broadcast: send to all users in all teams
+			delivered = hub.broadcastToAllTeams(messageJSON)
+			success = delivered > 0
+			log.Printf("🌍 Global broadcast message: %d recipients across all teams", delivered)
+		}
 	} else {
 		// Send to specific user in specific team
 		success = hub.sendToUser(req.TargetTeamID, req.TargetUserID, messageJSON)

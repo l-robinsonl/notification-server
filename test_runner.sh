@@ -1,5 +1,4 @@
 #!/bin/bash
-
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -11,7 +10,7 @@ NC='\033[0m' # No Color
 
 # Banner
 echo -e "${BLUE}╔══════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║${NC}        ${CYAN}WebSocket Server Tests${NC}        ${BLUE}║${NC}"
+echo -e "${BLUE}║${NC}      ${CYAN}Notification Server Tests${NC}      ${BLUE}║${NC}"
 echo -e "${BLUE}╚══════════════════════════════════════╝${NC}"
 echo ""
 
@@ -67,29 +66,22 @@ done
 echo ""
 echo -e "${BLUE}═══════════════════════════════════════${NC}"
 
-# Parse results for summary
-TOTAL_TESTS=$(echo "$TEST_OUTPUT" | grep "=== RUN   Test" | grep -v "/" | wc -l)
+# Parse results for summary - Fixed counting logic
+TOTAL_TESTS=$(echo "$TEST_OUTPUT" | grep "^=== RUN   Test" | grep -v "/" | wc -l)
 PASSED_TESTS=$(echo "$TEST_OUTPUT" | grep "^--- PASS: Test" | grep -v "/" | wc -l)
 FAILED_TESTS=$(echo "$TEST_OUTPUT" | grep "^--- FAIL: Test" | grep -v "/" | wc -l)
 
-# Calculate sub-tests too
-TOTAL_SUBTESTS=$(echo "$TEST_OUTPUT" | grep "=== RUN.*/" | wc -l)
-PASSED_SUBTESTS=$(echo "$TEST_OUTPUT" | grep "^--- PASS:.*/" | wc -l)
-FAILED_SUBTESTS=$(echo "$TEST_OUTPUT" | grep "^--- FAIL:.*/" | wc -l)
-
 # Summary
-echo -e "${YELLOW}📊 TEST SUMMARY${NC}"
+echo -e "${YELLOW}📊 UNIT TEST SUMMARY${NC}"
 echo -e "${BLUE}───────────────────────────────────────${NC}"
-echo -e "Main Tests:     ${GREEN}$PASSED_TESTS passed${NC}, ${RED}$FAILED_TESTS failed${NC} (${TOTAL_TESTS} total)"
-if [ "$TOTAL_SUBTESTS" -gt 0 ]; then
-    echo -e "Sub-tests:      ${GREEN}$PASSED_SUBTESTS passed${NC}, ${RED}$FAILED_SUBTESTS failed${NC} (${TOTAL_SUBTESTS} total)"
-fi
+echo -e "Tests:          ${GREEN}$PASSED_TESTS passed${NC}, ${RED}$FAILED_TESTS failed${NC} (${TOTAL_TESTS} total)"
 
 # Overall result
 echo -e "${BLUE}───────────────────────────────────────${NC}"
 if [ $EXIT_CODE -eq 0 ]; then
     echo -e "${GREEN}🎉 ALL TESTS PASSED! 🎉${NC}"
-    RUNTIME=$(echo "$TEST_OUTPUT" | grep -o "ok.*[0-9]\.[0-9]*s" | tail -1 | sed 's/ok.*  *//')
+    # Extract runtime more reliably
+    RUNTIME=$(echo "$TEST_OUTPUT" | grep "^ok" | tail -1 | awk '{print $NF}')
     if [ ! -z "$RUNTIME" ]; then
         echo -e "${CYAN}⏱️  Runtime: $RUNTIME${NC}"
     fi
