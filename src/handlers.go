@@ -139,7 +139,7 @@ func handleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 	// Send success response
 	conn.WriteJSON(map[string]interface{}{
-		"type":    "auth_success",
+		"type":    "authSuccess",
 		"message": "Successfully authenticated",
 	})
 

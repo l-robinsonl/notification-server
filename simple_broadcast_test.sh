@@ -89,8 +89,8 @@ class FakeClient:
                 # Send auth message with fake token
                 auth_msg = {
                     "type": "auth",
-                    "user_id": self.user_id,
-                    "team_id": self.team_id,
+                    "userId": self.user_id,
+                    "teamId": self.team_id,
                     "token": "fake_development_token"
                 }
                 

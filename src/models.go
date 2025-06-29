@@ -16,8 +16,8 @@ const (
 
 type AuthMessage struct {
   Type   string `json:"type"`
-  UserID string    `json:"user_id"`
-  TeamID string `json:"team_id"`
+  UserID string    `json:"userId"`
+  TeamID string `json:"teamId"`
   Token  string `json:"token"`
 }
 
@@ -34,6 +34,17 @@ type Message struct {
 	TargetUserID string `json:"targetUserId"` 
 	SenderUserID      string `json:"senderUserId"` 
 	MessageType string `json:"messageType"`
+	Body     string `json:"body"`
+	Timestamp   int64  `json:"timestamp"`
+}
+
+// MessageForREST represents the same message structure but with snake_case JSON tags for REST webhook
+type MessageForREST struct {
+	NotificationID string `json:"notification_id"` 
+	TargetTeamID      string `json:"target_team_id"`
+	TargetUserID string `json:"target_user_id"` 
+	SenderUserID      string `json:"sender_user_id"` 
+	MessageType string `json:"message_type"`
 	Body     string `json:"body"`
 	Timestamp   int64  `json:"timestamp"`
 }
@@ -62,9 +73,23 @@ type MessageRequest struct {
 	Broadcast    bool   `json:"broadcast"` // Whether to broadcast to the entire team
 }
 
-// ToJSON converts a message to JSON bytes
+// ToJSON converts a message to JSON bytes (camelCase for WebSocket)
 func (m *Message) ToJSON() ([]byte, error) {
 	return json.Marshal(m)
+}
+
+// ToRESTJSON converts a message to JSON bytes with snake_case for REST webhook responses
+func (m *Message) ToRESTJSON() ([]byte, error) {
+	restMsg := MessageForREST{
+		NotificationID: m.NotificationID,
+		TargetTeamID: m.TargetTeamID,
+		TargetUserID: m.TargetUserID,
+		SenderUserID: m.SenderUserID,
+		MessageType: m.MessageType,
+		Body: m.Body,
+		Timestamp: m.Timestamp,
+	}
+	return json.Marshal(restMsg)
 }
 
 // FromJSON parses JSON bytes into a MessageRequest
