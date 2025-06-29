@@ -172,7 +172,7 @@ func (c *Client) readPump() {
 			var typingMsg struct {
 				Type        string `json:"type"`
 				UserID      string `json:"userId"`
-				UserName    string `json:"userName"`
+				DisplayName    string `json:"displayName"`
 				RecipientID string `json:"recipientId"`
 				TeamID      string `json:"teamId"`
 			}
@@ -181,7 +181,7 @@ func (c *Client) readPump() {
 				continue
 			}
 			log.Printf("⌨️ [%s:%s] Typing start - User: %s (%s), Recipient: %s, Team: %s", 
-				c.teamID, c.userID, typingMsg.UserID, typingMsg.UserName, typingMsg.RecipientID, typingMsg.TeamID)
+				c.teamID, c.userID, typingMsg.UserID, typingMsg.DisplayName, typingMsg.RecipientID, typingMsg.TeamID)
 			
 			if typingMsg.RecipientID != "" {
 				// Private typing indicator
@@ -376,6 +376,7 @@ func (c *Client) authenticate(authMsg AuthMessage) error {
 		c.email = fmt.Sprintf("fake_%s@example.com", authMsg.UserID)
 		c.teamID = authMsg.TeamID
 		c.isAuthenticated = true
+		c.displayName = authMsg.DisplayName
 		c.mu.Unlock()
 		
 		log.Printf("✅ FAKE Client authenticated: user=%s, team=%s", c.userID, c.teamID)
@@ -441,14 +442,14 @@ func (c *Client) authenticate(authMsg AuthMessage) error {
 type UserJoinedMessage struct {
 	Type     string `json:"type"`
 	UserID   string `json:"userId"`
-	UserName string `json:"userName,omitempty"`
+	DisplayName string `json:"displayName,omitempty"`
 	TeamID   string `json:"teamId"`
 }
 
 type UserLeftMessage struct {
 	Type     string `json:"type"`
 	UserID   string `json:"userId"`
-	UserName string `json:"userName,omitempty"`
+	DisplayName string `json:"displayName,omitempty"`
 	TeamID   string `json:"teamId"`
 }
 
@@ -507,7 +508,7 @@ func (h *Hub) broadcastUserJoined(joinedClient *Client) {
 	message := UserJoinedMessage{
 		Type:     "userJoined",
 		UserID:   joinedClient.userID,
-		UserName: getDisplayName(joinedClient),
+		DisplayName: getDisplayName(joinedClient),
 		TeamID:   joinedClient.teamID,
 	}
 
@@ -537,9 +538,9 @@ func (h *Hub) broadcastUserJoined(joinedClient *Client) {
 // Broadcast user left to team members
 func (h *Hub) broadcastUserLeft(leftClient *Client) {
 	message := UserLeftMessage{
-		Type:     "user_left",
+		Type:     "userLeft",
 		UserID:   leftClient.userID,
-		UserName: getDisplayName(leftClient),
+		DisplayName: getDisplayName(leftClient),
 		TeamID:   leftClient.teamID,
 	}
 

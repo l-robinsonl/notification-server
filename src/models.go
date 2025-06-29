@@ -19,6 +19,7 @@ type AuthMessage struct {
   UserID string    `json:"userId"`
   TeamID string `json:"teamId"`
   Token  string `json:"token"`
+	DisplayName string `json:"displayName,omitempty"`
 }
 
 type UserData struct {
