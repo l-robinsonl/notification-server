@@ -14,6 +14,16 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+type deliveredMessage struct {
+	NotificationID string `json:"notificationId"`
+	TargetTeamID   string `json:"targetTeamId"`
+	TargetUserID   string `json:"targetUserId"`
+	SenderUserID   string `json:"senderUserId"`
+	MessageType    string `json:"messageType"`
+	Body           string `json:"body"`
+	ActionRequired bool   `json:"actionRequired"`
+}
+
 // TestHandleSendMessage tests the /send endpoint logic.
 func TestHandleSendMessage(t *testing.T) {
 	setupTestAppConfig()
@@ -113,8 +123,8 @@ func TestHandleSendMessage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// Need to register at least one client for the broadcast/send to succeed
 			client := &Client{teamID: "team-1", userID: "user-1", send: make(chan []byte, 1)}
-			hub.clients = map[string]map[string]*Client{
-				"team-1": {"user-1": client},
+			hub.clients = map[string]map[string]map[*Client]struct{}{
+				"team-1": {"user-1": {client: {}}},
 			}
 
 			req := httptest.NewRequest("POST", "/send", bytes.NewBufferString(tc.requestBody))
@@ -136,6 +146,47 @@ func TestHandleSendMessage(t *testing.T) {
 				t.Errorf("handler returned unexpected body: got %v want it to contain %v", rr.Body.String(), tc.expectedBody)
 			}
 		})
+	}
+}
+
+func TestHandleSendMessage_ActionRequiredForwardedToWebSocketPayload(t *testing.T) {
+	setupTestAppConfig()
+	hub := newHub()
+	client := &Client{teamID: "team-1", userID: "user-1", send: make(chan []byte, 1)}
+	hub.clients = map[string]map[string]map[*Client]struct{}{
+		"team-1": {"user-1": {client: {}}},
+	}
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/send",
+		bytes.NewBufferString(`{"notification_id":"notif-123","target_team_id":"team-1","target_user_id":"user-1","sender_user_id":"system","message_type":"system_alert","body":"hello there","action_required":true,"broadcast":false}`),
+	)
+	rr := httptest.NewRecorder()
+
+	handleSendMessage(hub, rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	select {
+	case payload := <-client.send:
+		var delivered deliveredMessage
+		if err := json.Unmarshal(payload, &delivered); err != nil {
+			t.Fatalf("failed to decode delivered payload: %v", err)
+		}
+		if delivered.NotificationID != "notif-123" {
+			t.Fatalf("expected notification id notif-123, got %s", delivered.NotificationID)
+		}
+		if !delivered.ActionRequired {
+			t.Fatal("expected actionRequired to be true in websocket payload")
+		}
+		if delivered.Body != "hello there" {
+			t.Fatalf("expected body hello there, got %s", delivered.Body)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for delivered websocket payload")
 	}
 }
 

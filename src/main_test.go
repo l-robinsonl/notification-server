@@ -129,9 +129,14 @@ func TestCorsMiddleware(t *testing.T) {
 func TestHealthCheckHandler(t *testing.T) {
 	hub := newHub()
 	// Populate hub for a more realistic health check
-	hub.clients = map[string]map[string]*Client{
-		"team-1": {"user-1": nil, "user-2": nil},
-		"team-2": {"user-3": nil},
+	hub.clients = map[string]map[string]map[*Client]struct{}{
+		"team-1": {
+			"user-1": {&Client{}: {}},
+			"user-2": {&Client{}: {}},
+		},
+		"team-2": {
+			"user-3": {&Client{}: {}},
+		},
 	}
 
 	req := httptest.NewRequest("GET", "/health", nil)

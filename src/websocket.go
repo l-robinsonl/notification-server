@@ -285,7 +285,7 @@ type HubHealth struct {
 
 // Hub maintains the set of active clients and broadcasts messages to them.
 type Hub struct {
-	clients    map[string]map[string]*Client
+	clients    map[string]map[string]map[*Client]struct{}
 	register   chan *Client
 	unregister chan *Client
 	mu         sync.RWMutex
@@ -293,7 +293,7 @@ type Hub struct {
 
 func newHub() *Hub {
 	return &Hub{
-		clients:    make(map[string]map[string]*Client),
+		clients:    make(map[string]map[string]map[*Client]struct{}),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 	}
@@ -304,9 +304,11 @@ func (h *Hub) snapshotTeamClients(teamID string) []*Client {
 	defer h.mu.RUnlock()
 
 	teamClients := h.clients[teamID]
-	clients := make([]*Client, 0, len(teamClients))
-	for _, client := range teamClients {
-		clients = append(clients, client)
+	clients := make([]*Client, 0, h.getTeamClientCountLocked(teamID))
+	for _, userClients := range teamClients {
+		for client := range userClients {
+			clients = append(clients, client)
+		}
 	}
 	return clients
 }
@@ -318,8 +320,10 @@ func (h *Hub) snapshotAllClients() []*Client {
 	total := h.getTotalClientCountLocked()
 	clients := make([]*Client, 0, total)
 	for _, teamClients := range h.clients {
-		for _, client := range teamClients {
-			clients = append(clients, client)
+		for _, userClients := range teamClients {
+			for client := range userClients {
+				clients = append(clients, client)
+			}
 		}
 	}
 	return clients
@@ -330,23 +334,15 @@ func (h *Hub) run() {
 	for {
 		select {
 		case client := <-h.register:
-			var replacedClient *Client
-
 			h.mu.Lock()
 			if _, ok := h.clients[client.teamID]; !ok {
-				h.clients[client.teamID] = make(map[string]*Client)
+				h.clients[client.teamID] = make(map[string]map[*Client]struct{})
 			}
-
-			if existing, ok := h.clients[client.teamID][client.userID]; ok && existing != client {
-				replacedClient = existing
+			if _, ok := h.clients[client.teamID][client.userID]; !ok {
+				h.clients[client.teamID][client.userID] = make(map[*Client]struct{})
 			}
-
-			h.clients[client.teamID][client.userID] = client
+			h.clients[client.teamID][client.userID][client] = struct{}{}
 			h.mu.Unlock()
-
-			if replacedClient != nil {
-				h.disconnectClient(replacedClient, "replaced by newer connection")
-			}
 
 			log.Printf("✅ Client registered: team=%s, user=%s", client.teamID, client.userID)
 
@@ -361,16 +357,26 @@ func (h *Hub) canAddClient(teamID string) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	if teamClients, ok := h.clients[teamID]; ok {
-		return len(teamClients) < AppConfig.Limits.MaxClientsPerTeam
+	if _, ok := h.clients[teamID]; ok {
+		return h.getTeamClientCountLocked(teamID) < AppConfig.Limits.MaxClientsPerTeam
 	}
 	return true
+}
+
+func (h *Hub) getTeamClientCountLocked(teamID string) int {
+	total := 0
+	for _, userClients := range h.clients[teamID] {
+		total += len(userClients)
+	}
+	return total
 }
 
 func (h *Hub) getTotalClientCountLocked() int {
 	total := 0
 	for _, teamClients := range h.clients {
-		total += len(teamClients)
+		for _, userClients := range teamClients {
+			total += len(userClients)
+		}
 	}
 	return total
 }
@@ -427,12 +433,20 @@ func (h *Hub) sendToUser(teamID, userID string, message []byte) int {
 
 	if teamID != "" {
 		h.mu.RLock()
-		client := h.clients[teamID][userID]
-		h.mu.RUnlock()
-		if h.enqueueMessage(client, message) {
-			return 1
+		userClients := h.clients[teamID][userID]
+		clients := make([]*Client, 0, len(userClients))
+		for client := range userClients {
+			clients = append(clients, client)
 		}
-		return 0
+		h.mu.RUnlock()
+
+		count := 0
+		for _, client := range clients {
+			if h.enqueueMessage(client, message) {
+				count++
+			}
+		}
+		return count
 	}
 
 	count := 0
@@ -499,14 +513,21 @@ func (h *Hub) removeClient(client *Client) bool {
 		return false
 	}
 
-	existing, ok := teamClients[client.userID]
-	if !ok || existing != client {
+	userClients, ok := teamClients[client.userID]
+	if !ok {
 		return false
 	}
 
-	delete(teamClients, client.userID)
+	if _, ok := userClients[client]; !ok {
+		return false
+	}
+
+	delete(userClients, client)
 	close(client.send)
 
+	if len(userClients) == 0 {
+		delete(teamClients, client.userID)
+	}
 	if len(teamClients) == 0 {
 		delete(h.clients, client.teamID)
 	}

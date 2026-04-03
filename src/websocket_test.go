@@ -302,6 +302,51 @@ func TestHub_Messaging(t *testing.T) {
 	})
 }
 
+func TestHub_AllowsMultipleSessionsPerUser(t *testing.T) {
+	setupTestAppConfig()
+	hub := newHub()
+	go hub.run()
+
+	client1 := &Client{hub: hub, teamID: "team-a", userID: "user-1", send: make(chan []byte, 8)}
+	client2 := &Client{hub: hub, teamID: "team-a", userID: "user-1", send: make(chan []byte, 8)}
+
+	hub.register <- client1
+	hub.register <- client2
+	time.Sleep(100 * time.Millisecond)
+
+	if totalClients := hub.getTotalClientCount(); totalClients != 2 {
+		t.Fatalf("expected 2 total client sessions, got %d", totalClients)
+	}
+
+	hub.mu.RLock()
+	if len(hub.clients["team-a"]) != 1 {
+		hub.mu.RUnlock()
+		t.Fatalf("expected 1 user bucket in team-a, got %d", len(hub.clients["team-a"]))
+	}
+	if len(hub.clients["team-a"]["user-1"]) != 2 {
+		hub.mu.RUnlock()
+		t.Fatalf("expected 2 sessions for team-a/user-1, got %d", len(hub.clients["team-a"]["user-1"]))
+	}
+	hub.mu.RUnlock()
+
+	message := []byte("fanout to all sessions")
+	delivered := hub.sendToUser("team-a", "user-1", message)
+	if delivered != 2 {
+		t.Fatalf("expected direct send to reach 2 sessions, got %d", delivered)
+	}
+
+	for i, client := range []*Client{client1, client2} {
+		select {
+		case received := <-client.send:
+			if string(received) != string(message) {
+				t.Fatalf("expected client %d to receive %q, got %q", i+1, message, received)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for message on client %d", i+1)
+		}
+	}
+}
+
 func TestClientReadPump_ClosesOnClientMessages(t *testing.T) {
 	setupTestAppConfig()
 	hub := newHub()
@@ -372,20 +417,20 @@ func TestClient_Authentication(t *testing.T) {
 		expectedErrStr string
 		expectedUserID string
 	}{
-			{
-				name:           "Success - Production with valid token",
-				mode:           "production",
-				authMsg:        AuthMessage{Token: "valid-token", TeamID: "team-prod", UserID: "temp-user"},
-				expectErr:      false,
-				expectedUserID: "123",
-			},
-			{
-				name:           "Success - Production with top-level selectedTeam",
-				mode:           "production",
-				authMsg:        AuthMessage{Token: "selected-team-token", TeamID: "team-prod"},
-				expectErr:      false,
-				expectedUserID: "456",
-			},
+		{
+			name:           "Success - Production with valid token",
+			mode:           "production",
+			authMsg:        AuthMessage{Token: "valid-token", TeamID: "team-prod", UserID: "temp-user"},
+			expectErr:      false,
+			expectedUserID: "123",
+		},
+		{
+			name:           "Success - Production with top-level selectedTeam",
+			mode:           "production",
+			authMsg:        AuthMessage{Token: "selected-team-token", TeamID: "team-prod"},
+			expectErr:      false,
+			expectedUserID: "456",
+		},
 		{
 			name:           "Failure - Production with invalid token",
 			mode:           "production",
@@ -393,20 +438,20 @@ func TestClient_Authentication(t *testing.T) {
 			expectErr:      true,
 			expectedErrStr: "invalid JWT token provided",
 		},
-			{
-				name:           "Failure - Production with unauthorized team",
-				mode:           "production",
-				authMsg:        AuthMessage{Token: "unauthorized-team-token", TeamID: "team-prod"},
-				expectErr:      true,
-				expectedErrStr: `requested team "team-prod" does not match selectedTeam "other-team"`,
-			},
-			{
-				name:           "Failure - Production with missing selectedTeam",
-				mode:           "production",
-				authMsg:        AuthMessage{Token: "missing-team-data-token", TeamID: "team-prod"},
-				expectErr:      true,
-				expectedErrStr: "authentication response missing selectedTeam",
-			},
+		{
+			name:           "Failure - Production with unauthorized team",
+			mode:           "production",
+			authMsg:        AuthMessage{Token: "unauthorized-team-token", TeamID: "team-prod"},
+			expectErr:      true,
+			expectedErrStr: `requested team "team-prod" does not match selectedTeam "other-team"`,
+		},
+		{
+			name:           "Failure - Production with missing selectedTeam",
+			mode:           "production",
+			authMsg:        AuthMessage{Token: "missing-team-data-token", TeamID: "team-prod"},
+			expectErr:      true,
+			expectedErrStr: "authentication response missing selectedTeam",
+		},
 		{
 			name:           "Success - Development with fake token",
 			mode:           "development",
@@ -498,15 +543,15 @@ func TestParseVerifiedUser_ExtractsSelectedTeam(t *testing.T) {
 				t.Fatalf("parseVerifiedUser returned error: %v", err)
 			}
 
-				if user.ID != tc.expectedUserID {
-					t.Fatalf("expected user id %s, got %s", tc.expectedUserID, user.ID)
-				}
-				if user.SelectedTeamID != tc.expectedSelectedTeam {
-					t.Fatalf("expected selected team %s, got %s", tc.expectedSelectedTeam, user.SelectedTeamID)
-				}
-			})
-		}
+			if user.ID != tc.expectedUserID {
+				t.Fatalf("expected user id %s, got %s", tc.expectedUserID, user.ID)
+			}
+			if user.SelectedTeamID != tc.expectedSelectedTeam {
+				t.Fatalf("expected selected team %s, got %s", tc.expectedSelectedTeam, user.SelectedTeamID)
+			}
+		})
 	}
+}
 
 // TestCircuitBreaker verifies the circuit breaker logic.
 func TestCircuitBreaker(t *testing.T) {

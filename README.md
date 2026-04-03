@@ -43,6 +43,7 @@ Request body:
   "sender_user_id": "system",
   "message_type": "system_alert",
   "body": "Hello from the backend",
+  "action_required": false,
   "broadcast": false
 }
 ```
@@ -50,7 +51,7 @@ Request body:
 Rules:
 
 - `broadcast: false` sends to `target_user_id`.
-- `broadcast: false` with `target_team_id` sends to that user in that team only.
+- `broadcast: false` with `target_team_id` sends to every connected session for that user in that team.
 - `broadcast: false` without `target_team_id` sends to every connected session for that user across all teams.
 - `broadcast: true` with `target_team_id` broadcasts to all connected users in that team.
 - `broadcast: true` without `target_team_id` broadcasts to all connected users in all teams.
@@ -122,7 +123,7 @@ Auth failure response:
 }
 ```
 
-After authentication, clients do not send application messages. The server only pushes notification payloads to authenticated sockets.
+After authentication, clients do not send application messages. The server only pushes notification payloads to authenticated sockets. A user may have multiple concurrent authenticated sockets, such as multiple browser tabs, and each active socket receives deliveries.
 
 Delivered notification payload:
 
@@ -134,6 +135,7 @@ Delivered notification payload:
   "senderUserId": "system",
   "messageType": "system_alert",
   "body": "Hello from the backend",
+  "actionRequired": false,
   "timestamp": 1775237123456
 }
 ```

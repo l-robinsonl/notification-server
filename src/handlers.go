@@ -217,7 +217,7 @@ func handleSendMessage(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Create the message
-	message := NewMessage(req.NotificationID, req.TargetTeamID, req.TargetUserID, req.SenderUserID, req.MessageType, req.Body)
+	message := NewMessage(req.NotificationID, req.TargetTeamID, req.TargetUserID, req.SenderUserID, req.MessageType, req.Body, req.ActionRequired)
 	messageJSON, err := message.ToJSON()
 	if err != nil {
 		log.Printf("❌ Error encoding message: %v", err)

@@ -29,11 +29,12 @@ type Message struct {
 	SenderUserID   string `json:"senderUserId"`
 	MessageType    string `json:"messageType"`
 	Body           string `json:"body"`
+	ActionRequired bool   `json:"actionRequired"`
 	Timestamp      int64  `json:"timestamp"`
 }
 
 // NewMessage creates a new message with the current timestamp
-func NewMessage(notificationID, targetTeamID, targetUserID, senderUserID, messageType, body string) *Message {
+func NewMessage(notificationID, targetTeamID, targetUserID, senderUserID, messageType, body string, actionRequired bool) *Message {
 	return &Message{
 		NotificationID: notificationID,
 		TargetTeamID:   targetTeamID,
@@ -41,6 +42,7 @@ func NewMessage(notificationID, targetTeamID, targetUserID, senderUserID, messag
 		SenderUserID:   senderUserID,
 		MessageType:    messageType,
 		Body:           body,
+		ActionRequired: actionRequired,
 		Timestamp:      time.Now().UnixMilli(),
 	}
 }
@@ -53,6 +55,7 @@ type MessageRequest struct {
 	TargetUserID   string `json:"target_user_id"`
 	MessageType    string `json:"message_type"`
 	Body           string `json:"body"`
+	ActionRequired bool   `json:"action_required"`
 	Broadcast      bool   `json:"broadcast"`
 }
 
