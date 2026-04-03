@@ -21,6 +21,7 @@ websocket:
   pong_wait: 60s
   ping_period: 54s  # Should be (pong_wait * 9) / 10
   max_message_size: 524288  # 512KB
+  auth_max_message_size: 16384  # 16KB
   read_deadline: 30s
   buffer_size:
     read: 1024
@@ -40,6 +41,12 @@ limits:
 circuit_breaker:
   threshold: 5        # Number of failures before opening circuit
   timeout: 60s        # How long to wait before trying again
+
+rate_limit:
+  requests_per_second: 20
+  burst: 60
+  entry_ttl: 5m
+  cleanup_interval: 1m
 
 logging:
   level: "info"       # debug, info, warn, error

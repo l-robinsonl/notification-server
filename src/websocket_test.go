@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -69,11 +70,11 @@ func (c *mockConn) Close() error {
 	return nil
 }
 
-func (c *mockConn) SetReadLimit(limit int64)                                 { c.readLimit = limit }
-func (c *mockConn) SetReadDeadline(t time.Time) error                        { c.readDead = t; return nil }
-func (c *mockConn) SetWriteDeadline(t time.Time) error                       { c.writeDead = t; return nil }
-func (c *mockConn) SetPongHandler(handler func(string) error)                { c.pongHandler = handler }
-func (c *mockConn) NextWriter(messageType int) (io.WriteCloser, error)       { return nil, nil }
+func (c *mockConn) SetReadLimit(limit int64)                           { c.readLimit = limit }
+func (c *mockConn) SetReadDeadline(t time.Time) error                  { c.readDead = t; return nil }
+func (c *mockConn) SetWriteDeadline(t time.Time) error                 { c.writeDead = t; return nil }
+func (c *mockConn) SetPongHandler(handler func(string) error)          { c.pongHandler = handler }
+func (c *mockConn) NextWriter(messageType int) (io.WriteCloser, error) { return nil, nil }
 func (c *mockConn) WriteJSON(v interface{}) error {
 	data, _ := json.Marshal(v)
 	return c.WriteMessage(websocket.TextMessage, data)
@@ -85,7 +86,21 @@ func setupTestAppConfig() {
 	setDefaults(AppConfig) // Apply defaults
 	AppConfig.Security.APIKey = "test-api-key"
 	AppConfig.Backend.URL = "http://test.backend"
+	AppConfig.Server.AllowedOrigins = []string{"*"}
 	AppConfig.Environment.Mode = "production"
+	backendCircuitBreaker = &CircuitBreaker{}
+	httpClient = nil
+	requestRateLimiter = nil
+}
+
+func drainClientMessages(client *Client) {
+	for {
+		select {
+		case <-client.send:
+		default:
+			return
+		}
+	}
 }
 
 // TestHub checks the core functionality of the Hub (register, unregister, run).
@@ -94,9 +109,9 @@ func TestHub(t *testing.T) {
 	hub := newHub()
 	go hub.run()
 
-	client1 := &Client{hub: hub, teamID: "team-a", userID: "user-1", send: make(chan []byte, 1)}
-	client2 := &Client{hub: hub, teamID: "team-a", userID: "user-2", send: make(chan []byte, 1)}
-	client3 := &Client{hub: hub, teamID: "team-b", userID: "user-3", send: make(chan []byte, 1)}
+	client1 := &Client{hub: hub, teamID: "team-a", userID: "user-1", send: make(chan []byte, 8)}
+	client2 := &Client{hub: hub, teamID: "team-a", userID: "user-2", send: make(chan []byte, 8)}
+	client3 := &Client{hub: hub, teamID: "team-b", userID: "user-3", send: make(chan []byte, 8)}
 
 	// Test Registration
 	hub.register <- client1
@@ -154,7 +169,7 @@ func TestHub_ClientLimits(t *testing.T) {
 
 	// Add 2 clients, which is the limit
 	for i := 0; i < 2; i++ {
-		hub.register <- &Client{hub: hub, teamID: "team-limited", userID: fmt.Sprintf("user-%d", i), send: make(chan []byte, 1)}
+		hub.register <- &Client{hub: hub, teamID: "team-limited", userID: fmt.Sprintf("user-%d", i), send: make(chan []byte, 8)}
 	}
 
 	time.Sleep(100 * time.Millisecond)
@@ -182,20 +197,24 @@ func TestHub_Messaging(t *testing.T) {
 	conn1 := newMockConn()
 	conn2 := newMockConn()
 	conn3 := newMockConn()
-	client1 := &Client{hub: hub, conn: conn1, teamID: "team-a", userID: "user-1", send: make(chan []byte, 1)}
-	client2 := &Client{hub: hub, conn: conn2, teamID: "team-a", userID: "user-2", send: make(chan []byte, 1)}
-	client3 := &Client{hub: hub, conn: conn3, teamID: "team-b", userID: "user-3", send: make(chan []byte, 1)}
+	client1 := &Client{hub: hub, conn: conn1, teamID: "team-a", userID: "user-1", send: make(chan []byte, 8)}
+	client2 := &Client{hub: hub, conn: conn2, teamID: "team-a", userID: "user-2", send: make(chan []byte, 8)}
+	client3 := &Client{hub: hub, conn: conn3, teamID: "team-b", userID: "user-1", send: make(chan []byte, 8)}
 
 	hub.register <- client1
 	hub.register <- client2
 	hub.register <- client3
 	time.Sleep(100 * time.Millisecond)
 
+	drainClientMessages(client1)
+	drainClientMessages(client2)
+	drainClientMessages(client3)
+
 	t.Run("SendToUser", func(t *testing.T) {
 		message := []byte("private message")
-		success := hub.sendToUser("team-a", "user-1", message)
-		if !success {
-			t.Fatal("sendToUser should have returned true for a connected client")
+		delivered := hub.sendToUser("team-a", "user-1", message)
+		if delivered != 1 {
+			t.Fatalf("sendToUser should have delivered to 1 connected client, got %d", delivered)
 		}
 
 		// Check if message was received by the correct client
@@ -211,6 +230,29 @@ func TestHub_Messaging(t *testing.T) {
 		// Ensure other clients did not receive it
 		if len(client2.send) > 0 {
 			t.Error("client2 should not have received the private message")
+		}
+	})
+
+	t.Run("SendToUserAcrossTeams", func(t *testing.T) {
+		message := []byte("cross-team direct")
+		delivered := hub.sendToUser("", "user-1", message)
+		if delivered != 2 {
+			t.Fatalf("expected cross-team direct send to deliver to 2 sessions, got %d", delivered)
+		}
+
+		for i, c := range []*Client{client1, client3} {
+			select {
+			case received := <-c.send:
+				if string(received) != string(message) {
+					t.Errorf("Expected client %d to receive '%s', got '%s'", i+1, message, received)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("Timed out waiting for cross-team direct message for client %d", i+1)
+			}
+		}
+
+		if len(client2.send) > 0 {
+			t.Error("client2 should not have received the cross-team direct message")
 		}
 	})
 
@@ -260,12 +302,50 @@ func TestHub_Messaging(t *testing.T) {
 	})
 }
 
+func TestClientReadPump_ClosesOnClientMessages(t *testing.T) {
+	setupTestAppConfig()
+	hub := newHub()
+	go hub.run()
+
+	senderConn := newMockConn()
+	sender := &Client{
+		hub:    hub,
+		conn:   senderConn,
+		teamID: "team-a",
+		userID: "sender",
+		send:   make(chan []byte, 1),
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sender.readPump()
+	}()
+
+	senderConn.read <- []byte(`{"type":"userMessage","content":"not supported"}`)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("expected readPump to close when client sends an application message")
+	}
+}
+
 // TestClient_Authentication tests the client authentication logic.
 func TestClient_Authentication(t *testing.T) {
 	// 1. Setup a mock backend server
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader == "Bearer valid-token" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"id": 123, "email": "test@example.com", "settings": {"selectedTeam": "team-prod"}}`))
+		} else if authHeader == "Bearer selected-team-token" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"id": "456", "email": "selected@example.com", "selectedTeam": "team-prod"}`))
+		} else if authHeader == "Bearer unauthorized-team-token" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"id": 123, "email": "test@example.com", "settings": {"selectedTeam": "other-team"}}`))
+		} else if authHeader == "Bearer missing-team-data-token" {
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(`{"id": 123, "email": "test@example.com"}`))
 		} else if authHeader == "Bearer invalid-token" {
@@ -284,59 +364,77 @@ func TestClient_Authentication(t *testing.T) {
 
 	// 3. Define test cases
 	testCases := []struct {
-		name          string
-		mode          string // "development" or "production"
-		fakeAuth      bool
-		authMsg       AuthMessage
-		expectErr     bool
+		name           string
+		mode           string // "development" or "production"
+		fakeAuth       bool
+		authMsg        AuthMessage
+		expectErr      bool
 		expectedErrStr string
 		expectedUserID string
-		expectedEmail  string
 	}{
+			{
+				name:           "Success - Production with valid token",
+				mode:           "production",
+				authMsg:        AuthMessage{Token: "valid-token", TeamID: "team-prod", UserID: "temp-user"},
+				expectErr:      false,
+				expectedUserID: "123",
+			},
+			{
+				name:           "Success - Production with top-level selectedTeam",
+				mode:           "production",
+				authMsg:        AuthMessage{Token: "selected-team-token", TeamID: "team-prod"},
+				expectErr:      false,
+				expectedUserID: "456",
+			},
 		{
-			name:      "Success - Production with valid token",
-			mode:      "production",
-			authMsg:   AuthMessage{Token: "valid-token", TeamID: "team-prod", UserID: "temp-user"},
-			expectErr: false,
-			expectedUserID: "123",
-			expectedEmail:  "test@example.com",
-		},
-		{
-			name:        "Failure - Production with invalid token",
-			mode:        "production",
-			authMsg:     AuthMessage{Token: "invalid-token", TeamID: "team-prod"},
-			expectErr:   true,
+			name:           "Failure - Production with invalid token",
+			mode:           "production",
+			authMsg:        AuthMessage{Token: "invalid-token", TeamID: "team-prod"},
+			expectErr:      true,
 			expectedErrStr: "invalid JWT token provided",
 		},
+			{
+				name:           "Failure - Production with unauthorized team",
+				mode:           "production",
+				authMsg:        AuthMessage{Token: "unauthorized-team-token", TeamID: "team-prod"},
+				expectErr:      true,
+				expectedErrStr: `requested team "team-prod" does not match selectedTeam "other-team"`,
+			},
+			{
+				name:           "Failure - Production with missing selectedTeam",
+				mode:           "production",
+				authMsg:        AuthMessage{Token: "missing-team-data-token", TeamID: "team-prod"},
+				expectErr:      true,
+				expectedErrStr: "authentication response missing selectedTeam",
+			},
 		{
-			name:       "Success - Development with fake token",
-			mode:       "development",
-			fakeAuth:   true,
-			authMsg:    AuthMessage{Token: "fake_development_token", TeamID: "team-dev", UserID: "fake-user-456"},
-			expectErr:  false,
+			name:           "Success - Development with fake token",
+			mode:           "development",
+			fakeAuth:       true,
+			authMsg:        AuthMessage{Token: "fake_development_token", TeamID: "team-dev", UserID: "fake-user-456"},
+			expectErr:      false,
 			expectedUserID: "fake-user-456",
-			expectedEmail:  "fake_fake-user-456@example.com",
 		},
 		{
-			name:        "Failure - Production with fake token",
-			mode:        "production",
-			authMsg:     AuthMessage{Token: "fake_development_token", TeamID: "team-prod"},
-			expectErr:   true,
+			name:           "Failure - Production with fake token",
+			mode:           "production",
+			authMsg:        AuthMessage{Token: "fake_development_token", TeamID: "team-prod"},
+			expectErr:      true,
 			expectedErrStr: "invalid authentication token",
 		},
 		{
-			name:        "Failure - Development with fake token but fake auth disabled",
-			mode:        "development",
-			fakeAuth:   false,
-			authMsg:     AuthMessage{Token: "fake_development_token", TeamID: "team-dev"},
-			expectErr:   true,
+			name:           "Failure - Development with fake token but fake auth disabled",
+			mode:           "development",
+			fakeAuth:       false,
+			authMsg:        AuthMessage{Token: "fake_development_token", TeamID: "team-dev"},
+			expectErr:      true,
 			expectedErrStr: "invalid authentication token", // It gets rejected before making a real call
 		},
 		{
-			name:        "Failure - Backend server error",
-			mode:        "production",
-			authMsg:     AuthMessage{Token: "causes-server-error", TeamID: "team-prod"},
-			expectErr:   true,
+			name:      "Failure - Backend server error",
+			mode:      "production",
+			authMsg:   AuthMessage{Token: "causes-server-error", TeamID: "team-prod"},
+			expectErr: true,
 			// Changed to match the actual error format from the application
 			expectedErrStr: "authentication failed with status: 500 Internal Server Error",
 		},
@@ -364,9 +462,6 @@ func TestClient_Authentication(t *testing.T) {
 				if client.userID != tc.expectedUserID {
 					t.Errorf("Expected UserID to be '%s', got '%s'", tc.expectedUserID, client.userID)
 				}
-				if client.email != tc.expectedEmail {
-					t.Errorf("Expected Email to be '%s', got '%s'", tc.expectedEmail, client.email)
-				}
 				if !client.isAuthenticated {
 					t.Error("Expected client.isAuthenticated to be true")
 				}
@@ -375,29 +470,77 @@ func TestClient_Authentication(t *testing.T) {
 	}
 }
 
+func TestParseVerifiedUser_ExtractsSelectedTeam(t *testing.T) {
+	testCases := []struct {
+		name                 string
+		body                 string
+		expectedUserID       string
+		expectedSelectedTeam string
+	}{
+		{
+			name:                 "nested settings selectedTeam",
+			body:                 `{"id":123,"email":"test@example.com","settings":{"selectedTeam":"team-a"}}`,
+			expectedUserID:       "123",
+			expectedSelectedTeam: "team-a",
+		},
+		{
+			name:                 "top level selectedTeam",
+			body:                 `{"id":"456","email":"team@example.com","selectedTeam":"team-b"}`,
+			expectedUserID:       "456",
+			expectedSelectedTeam: "team-b",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			user, err := parseVerifiedUser([]byte(tc.body))
+			if err != nil {
+				t.Fatalf("parseVerifiedUser returned error: %v", err)
+			}
+
+				if user.ID != tc.expectedUserID {
+					t.Fatalf("expected user id %s, got %s", tc.expectedUserID, user.ID)
+				}
+				if user.SelectedTeamID != tc.expectedSelectedTeam {
+					t.Fatalf("expected selected team %s, got %s", tc.expectedSelectedTeam, user.SelectedTeamID)
+				}
+			})
+		}
+	}
+
 // TestCircuitBreaker verifies the circuit breaker logic.
 func TestCircuitBreaker(t *testing.T) {
 	setupTestAppConfig()
 	AppConfig.CircuitBreaker.Threshold = 2
 	AppConfig.CircuitBreaker.Timeout = 100 * time.Millisecond
-	
+
 	cb := &CircuitBreaker{}
-	failingCall := func() error { return errors.New("backend failure") }
+	failingCall := func() error { return markCircuitBreakerFailure(errors.New("backend failure")) }
 	successfulCall := func() error { return nil }
 
 	// First failure
 	err := cb.Call(failingCall)
-	if err == nil { t.Fatal("Expected error on first call") }
-	if cb.failures != 1 { t.Errorf("Expected 1 failure, got %d", cb.failures) }
+	if err == nil {
+		t.Fatal("Expected error on first call")
+	}
+	if cb.failures != 1 {
+		t.Errorf("Expected 1 failure, got %d", cb.failures)
+	}
 
 	// Second failure, should trip the breaker
 	err = cb.Call(failingCall)
-	if err == nil { t.Fatal("Expected error on second call") }
-	if cb.failures != 2 { t.Errorf("Expected 2 failures, got %d", cb.failures) }
+	if err == nil {
+		t.Fatal("Expected error on second call")
+	}
+	if cb.failures != 2 {
+		t.Errorf("Expected 2 failures, got %d", cb.failures)
+	}
 
 	// Breaker is now open
 	err = cb.Call(successfulCall) // This call shouldn't even be attempted
-	if err == nil { t.Fatal("Expected circuit breaker to be open") }
+	if err == nil {
+		t.Fatal("Expected circuit breaker to be open")
+	}
 	if err.Error() != "circuit breaker open - backend unavailable" {
 		t.Errorf("Expected open circuit breaker error, got: %v", err)
 	}
@@ -407,10 +550,50 @@ func TestCircuitBreaker(t *testing.T) {
 
 	// Breaker is now half-open. A successful call should close it.
 	err = cb.Call(successfulCall)
-	if err != nil { t.Fatalf("Expected successful call after timeout, got: %v", err) }
-	if cb.failures != 0 { t.Errorf("Expected failures to be reset to 0, got %d", cb.failures) }
-	
+	if err != nil {
+		t.Fatalf("Expected successful call after timeout, got: %v", err)
+	}
+	if cb.failures != 0 {
+		t.Errorf("Expected failures to be reset to 0, got %d", cb.failures)
+	}
+
 	// A subsequent successful call should also work
 	err = cb.Call(successfulCall)
-	if err != nil { t.Fatalf("Expected another successful call, got: %v", err) }
+	if err != nil {
+		t.Fatalf("Expected another successful call, got: %v", err)
+	}
+}
+
+func TestClientAuthentication_InvalidTokensDoNotOpenCircuitBreaker(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Header.Get("Authorization") {
+		case "Bearer invalid-token":
+			w.WriteHeader(http.StatusUnauthorized)
+		case "Bearer valid-token":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"id":"123","email":"test@example.com","settings":{"selectedTeam":"team-prod"}}`))
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer mockServer.Close()
+
+	setupTestAppConfig()
+	AppConfig.Backend.URL = mockServer.URL
+	AppConfig.CircuitBreaker.Threshold = 2
+	AppConfig.CircuitBreaker.Timeout = time.Minute
+	httpClient = mockServer.Client()
+
+	for i := 0; i < 3; i++ {
+		client := &Client{}
+		err := client.authenticate(AuthMessage{Token: "invalid-token", TeamID: "team-prod"})
+		if err == nil || !strings.Contains(err.Error(), "invalid JWT token provided") {
+			t.Fatalf("expected invalid token error, got %v", err)
+		}
+	}
+
+	client := &Client{}
+	if err := client.authenticate(AuthMessage{Token: "valid-token", TeamID: "team-prod"}); err != nil {
+		t.Fatalf("expected valid token to succeed after invalid attempts, got %v", err)
+	}
 }

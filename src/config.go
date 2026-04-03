@@ -3,8 +3,9 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v2"
@@ -20,12 +21,13 @@ type Config struct {
 	} `yaml:"server"`
 
 	WebSocket struct {
-		WriteWait      time.Duration `yaml:"write_wait"`
-		PongWait       time.Duration `yaml:"pong_wait"`
-		PingPeriod     time.Duration `yaml:"ping_period"`
-		MaxMessageSize int64         `yaml:"max_message_size"`
-		ReadDeadline   time.Duration `yaml:"read_deadline"`
-		BufferSize     struct {
+		WriteWait          time.Duration `yaml:"write_wait"`
+		PongWait           time.Duration `yaml:"pong_wait"`
+		PingPeriod         time.Duration `yaml:"ping_period"`
+		MaxMessageSize     int64         `yaml:"max_message_size"`
+		AuthMaxMessageSize int64         `yaml:"auth_max_message_size"`
+		ReadDeadline       time.Duration `yaml:"read_deadline"`
+		BufferSize         struct {
 			Read  int `yaml:"read"`
 			Write int `yaml:"write"`
 		} `yaml:"buffer_size"`
@@ -50,6 +52,13 @@ type Config struct {
 		Timeout   time.Duration `yaml:"timeout"`
 	} `yaml:"circuit_breaker"`
 
+	RateLimit struct {
+		RequestsPerSecond float64       `yaml:"requests_per_second"`
+		Burst             int           `yaml:"burst"`
+		EntryTTL          time.Duration `yaml:"entry_ttl"`
+		CleanupInterval   time.Duration `yaml:"cleanup_interval"`
+	} `yaml:"rate_limit"`
+
 	Logging struct {
 		Level  string `yaml:"level"`
 		Format string `yaml:"format"`
@@ -57,7 +66,7 @@ type Config struct {
 
 	// Environment settings
 	Environment struct {
-		Mode            string `yaml:"mode"`             // "development" or "production"
+		Mode            string `yaml:"mode"`              // "development" or "production"
 		AllowAllOrigins bool   `yaml:"allow_all_origins"` // Override for dev
 		EnableFakeAuth  bool   `yaml:"enable_fake_auth"`  // For testing
 	} `yaml:"environment"`
@@ -66,7 +75,7 @@ type Config struct {
 var AppConfig *Config
 
 func LoadConfig(configPath string) error {
-	data, err := ioutil.ReadFile(configPath)
+	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("failed to read config file: %v", err)
 	}
@@ -103,7 +112,7 @@ func setDefaults(config *Config) {
 		config.Server.IdleTimeout = 120 * time.Second
 	}
 	if len(config.Server.AllowedOrigins) == 0 {
-		config.Server.AllowedOrigins = []string{"*"} // Default to allow all (not recommended for production)
+		config.Server.AllowedOrigins = []string{}
 	}
 
 	if config.WebSocket.WriteWait == 0 {
@@ -117,6 +126,9 @@ func setDefaults(config *Config) {
 	}
 	if config.WebSocket.MaxMessageSize == 0 {
 		config.WebSocket.MaxMessageSize = 512 * 1024 // 512KB
+	}
+	if config.WebSocket.AuthMaxMessageSize == 0 {
+		config.WebSocket.AuthMaxMessageSize = 16 * 1024 // 16KB
 	}
 	if config.WebSocket.ReadDeadline == 0 {
 		config.WebSocket.ReadDeadline = 30 * time.Second
@@ -149,6 +161,19 @@ func setDefaults(config *Config) {
 		config.CircuitBreaker.Timeout = 60 * time.Second
 	}
 
+	if config.RateLimit.RequestsPerSecond == 0 {
+		config.RateLimit.RequestsPerSecond = 20
+	}
+	if config.RateLimit.Burst == 0 {
+		config.RateLimit.Burst = 60
+	}
+	if config.RateLimit.EntryTTL == 0 {
+		config.RateLimit.EntryTTL = 5 * time.Minute
+	}
+	if config.RateLimit.CleanupInterval == 0 {
+		config.RateLimit.CleanupInterval = time.Minute
+	}
+
 	if config.Logging.Level == "" {
 		config.Logging.Level = "info"
 	}
@@ -163,11 +188,48 @@ func setDefaults(config *Config) {
 }
 
 func validateConfig(config *Config) error {
+	config.Security.APIKey = strings.TrimSpace(config.Security.APIKey)
+	config.Backend.URL = strings.TrimSpace(config.Backend.URL)
+	config.Environment.Mode = strings.ToLower(strings.TrimSpace(config.Environment.Mode))
+
 	if config.Security.APIKey == "" {
 		return fmt.Errorf("security.api_key is required")
 	}
 	if config.Backend.URL == "" {
 		return fmt.Errorf("backend.url is required")
+	}
+	if config.Environment.Mode != "development" && config.Environment.Mode != "production" {
+		return fmt.Errorf("environment.mode must be either development or production")
+	}
+	if config.Environment.Mode == "production" && config.Environment.EnableFakeAuth {
+		return fmt.Errorf("environment.enable_fake_auth cannot be true in production")
+	}
+	if config.WebSocket.PingPeriod >= config.WebSocket.PongWait {
+		return fmt.Errorf("websocket.ping_period must be less than websocket.pong_wait")
+	}
+	if config.WebSocket.AuthMaxMessageSize < 1 {
+		return fmt.Errorf("websocket.auth_max_message_size must be greater than 0")
+	}
+	if config.WebSocket.AuthMaxMessageSize > config.WebSocket.MaxMessageSize {
+		return fmt.Errorf("websocket.auth_max_message_size must not exceed websocket.max_message_size")
+	}
+	if config.Limits.MaxClientsPerTeam < 1 {
+		return fmt.Errorf("limits.max_clients_per_team must be greater than 0")
+	}
+	if config.Limits.SendChannelBuffer < 1 {
+		return fmt.Errorf("limits.send_channel_buffer must be greater than 0")
+	}
+	if config.RateLimit.RequestsPerSecond <= 0 {
+		return fmt.Errorf("rate_limit.requests_per_second must be greater than 0")
+	}
+	if config.RateLimit.Burst < 1 {
+		return fmt.Errorf("rate_limit.burst must be greater than 0")
+	}
+	if config.RateLimit.EntryTTL <= 0 {
+		return fmt.Errorf("rate_limit.entry_ttl must be greater than 0")
+	}
+	if config.RateLimit.CleanupInterval <= 0 {
+		return fmt.Errorf("rate_limit.cleanup_interval must be greater than 0")
 	}
 	return nil
 }
@@ -208,13 +270,13 @@ func IsOriginAllowed(origin string) bool {
 	if AppConfig == nil {
 		return false
 	}
-	
+
 	// In development, allow all origins if configured
 	if ShouldAllowAllOrigins() {
 		log.Printf("🧪 DEV: Allowing origin %s (development mode)", origin)
 		return true
 	}
-	
+
 	// In production, check against allowed origins list
 	for _, allowed := range AppConfig.Server.AllowedOrigins {
 		if allowed == "*" {
@@ -225,7 +287,7 @@ func IsOriginAllowed(origin string) bool {
 			return true
 		}
 	}
-	
+
 	log.Printf("❌ Origin rejected: %s", origin)
 	return false
 }

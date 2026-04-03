@@ -153,6 +153,30 @@ backend:
 	}
 }
 
+func TestLoadConfig_ValidationFailure_UnsafeProductionConfig(t *testing.T) {
+	yamlContent := `
+security:
+  api_key: "a-required-key"
+backend:
+  url: "http://localhost:8000"
+environment:
+  mode: "production"
+  enable_fake_auth: true
+`
+	configFile, cleanup := createTempConfigFile(t, yamlContent)
+	defer cleanup()
+
+	err := LoadConfig(configFile)
+	if err == nil {
+		t.Fatal("LoadConfig() should have returned a validation error, but it didn't")
+	}
+
+	expectedError := "config validation failed: environment.enable_fake_auth cannot be true in production"
+	if err.Error() != expectedError {
+		t.Errorf("Expected error '%s', got '%v'", expectedError, err)
+	}
+}
+
 // TestSetDefaults checks if default values are correctly applied for an empty config.
 func TestSetDefaults(t *testing.T) {
 	// We need some required fields for validation to pass
@@ -184,6 +208,9 @@ backend:
 	if AppConfig.WebSocket.PongWait != 60*time.Second {
 		t.Errorf("Expected default WebSocket.PongWait to be 60s, got %v", AppConfig.WebSocket.PongWait)
 	}
+	if AppConfig.WebSocket.AuthMaxMessageSize != 16*1024 {
+		t.Errorf("Expected default WebSocket.AuthMaxMessageSize to be 16384, got %d", AppConfig.WebSocket.AuthMaxMessageSize)
+	}
 	// PingPeriod is derived from PongWait
 	expectedPingPeriod := (60 * time.Second * 9) / 10
 	if AppConfig.WebSocket.PingPeriod != expectedPingPeriod {
@@ -195,7 +222,10 @@ backend:
 	if AppConfig.Environment.Mode != "production" {
 		t.Errorf("Expected default Environment.Mode to be 'production', got '%s'", AppConfig.Environment.Mode)
 	}
-	expectedOrigins := []string{"*"}
+	if AppConfig.RateLimit.RequestsPerSecond != 20 {
+		t.Errorf("Expected default RateLimit.RequestsPerSecond to be 20, got %v", AppConfig.RateLimit.RequestsPerSecond)
+	}
+	expectedOrigins := []string{}
 	if !reflect.DeepEqual(AppConfig.Server.AllowedOrigins, expectedOrigins) {
 		t.Errorf("Expected default AllowedOrigins to be %v, got %v", expectedOrigins, AppConfig.Server.AllowedOrigins)
 	}
@@ -207,18 +237,18 @@ func TestEnvironmentHelpers(t *testing.T) {
 	defer func() { AppConfig = nil }()
 
 	testCases := []struct {
-		name                   string
-		config                 *Config
-		expectedIsDevelopment  bool
-		expectedIsProduction   bool
+		name                    string
+		config                  *Config
+		expectedIsDevelopment   bool
+		expectedIsProduction    bool
 		expectedAllowAllOrigins bool
 		expectedFakeAuthEnabled bool
 	}{
 		{
-			name:                   "AppConfig is nil",
-			config:                 nil,
-			expectedIsDevelopment:  false,
-			expectedIsProduction:   true,  // Safety default
+			name:                    "AppConfig is nil",
+			config:                  nil,
+			expectedIsDevelopment:   false,
+			expectedIsProduction:    true, // Safety default
 			expectedAllowAllOrigins: false,
 			expectedFakeAuthEnabled: false,
 		},
@@ -231,8 +261,8 @@ func TestEnvironmentHelpers(t *testing.T) {
 					EnableFakeAuth  bool   `yaml:"enable_fake_auth"`
 				}{Mode: "production"},
 			},
-			expectedIsDevelopment:  false,
-			expectedIsProduction:   true,
+			expectedIsDevelopment:   false,
+			expectedIsProduction:    true,
 			expectedAllowAllOrigins: false,
 			expectedFakeAuthEnabled: false,
 		},
@@ -245,9 +275,9 @@ func TestEnvironmentHelpers(t *testing.T) {
 					EnableFakeAuth  bool   `yaml:"enable_fake_auth"`
 				}{Mode: "development"},
 			},
-			expectedIsDevelopment:  true,
-			expectedIsProduction:   false,
-			expectedAllowAllOrigins: true, // Should be true because dev mode implies it
+			expectedIsDevelopment:   true,
+			expectedIsProduction:    false,
+			expectedAllowAllOrigins: true,  // Should be true because dev mode implies it
 			expectedFakeAuthEnabled: false, // FakeAuth is still false
 		},
 		{
@@ -259,8 +289,8 @@ func TestEnvironmentHelpers(t *testing.T) {
 					EnableFakeAuth  bool   `yaml:"enable_fake_auth"`
 				}{Mode: "development", EnableFakeAuth: true},
 			},
-			expectedIsDevelopment:  true,
-			expectedIsProduction:   false,
+			expectedIsDevelopment:   true,
+			expectedIsProduction:    false,
 			expectedAllowAllOrigins: true,
 			expectedFakeAuthEnabled: true,
 		},
@@ -273,8 +303,8 @@ func TestEnvironmentHelpers(t *testing.T) {
 					EnableFakeAuth  bool   `yaml:"enable_fake_auth"`
 				}{Mode: "production", AllowAllOrigins: true},
 			},
-			expectedIsDevelopment:  false,
-			expectedIsProduction:   true,
+			expectedIsDevelopment:   false,
+			expectedIsProduction:    true,
 			expectedAllowAllOrigins: true, // Overridden
 			expectedFakeAuthEnabled: false,
 		},
@@ -287,8 +317,8 @@ func TestEnvironmentHelpers(t *testing.T) {
 					EnableFakeAuth  bool   `yaml:"enable_fake_auth"`
 				}{Mode: "production", EnableFakeAuth: true},
 			},
-			expectedIsDevelopment:  false,
-			expectedIsProduction:   true,
+			expectedIsDevelopment:   false,
+			expectedIsProduction:    true,
 			expectedAllowAllOrigins: false,
 			expectedFakeAuthEnabled: false, // Should be false because not in dev mode
 		},

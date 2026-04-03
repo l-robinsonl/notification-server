@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestApiKeyMiddleware validates the API key checking logic.
@@ -132,10 +133,10 @@ func TestHealthCheckHandler(t *testing.T) {
 		"team-1": {"user-1": nil, "user-2": nil},
 		"team-2": {"user-3": nil},
 	}
-	
+
 	req := httptest.NewRequest("GET", "/health", nil)
 	rr := httptest.NewRecorder()
-	
+
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// This is a simplified version of the main.go handler
 		health := hub.healthCheck()
@@ -143,26 +144,54 @@ func TestHealthCheckHandler(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":        "healthy",
-			"total_teams":   health["total_teams"],
-			"total_clients": health["total_clients"],
+			"total_teams":   health.TotalTeams,
+			"total_clients": health.TotalClients,
 		})
 	})
-	
+
 	handler.ServeHTTP(rr, req)
 
 	if status := rr.Code; status != http.StatusOK {
 		t.Errorf("health handler returned wrong status code: got %v want %v",
 			status, http.StatusOK)
 	}
-	
+
 	// Check the content of the response
 	expectedBody := `"total_teams":2`
 	if !strings.Contains(rr.Body.String(), expectedBody) {
 		t.Errorf("health handler body missing or incorrect total_teams: got %s", rr.Body.String())
 	}
-	
+
 	expectedBody = `"total_clients":3`
 	if !strings.Contains(rr.Body.String(), expectedBody) {
 		t.Errorf("health handler body missing or incorrect total_clients: got %s", rr.Body.String())
+	}
+}
+
+func TestRateLimitMiddleware(t *testing.T) {
+	setupTestAppConfig()
+	requestRateLimiter = newIPRateLimiter(1, 2, time.Minute, time.Minute)
+	defer func() { requestRateLimiter = nil }()
+
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handlerToTest := rateLimitMiddleware(nextHandler)
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest("GET", "http://testing/send", nil)
+		req.RemoteAddr = "203.0.113.10:1234"
+		rr := httptest.NewRecorder()
+
+		handlerToTest.ServeHTTP(rr, req)
+
+		expected := http.StatusOK
+		if i == 2 {
+			expected = http.StatusTooManyRequests
+		}
+		if rr.Code != expected {
+			t.Fatalf("request %d returned %d, want %d", i+1, rr.Code, expected)
+		}
 	}
 }

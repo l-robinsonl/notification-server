@@ -1,83 +1,139 @@
-# WebSocket Server
+# Notification Server
 
-A high-performance WebSocket server written in Go. Easy to integrate with any application
+A Go realtime notification server for team-scoped and user-scoped delivery over WebSockets, with a REST entrypoint for backend-triggered notifications.
 
 ## Features
 
-- REST endpoint for sending messages to specific users or broadcasting to teams
-- WebSocket connections for real-time message delivery
-- Team and user scoping for message routing
-- Heartbeat mechanism to ensure connections stay alive
+- REST delivery to a single user, a team, or all connected teams
+- WebSocket connections with authenticated session setup
+- Ping/pong heartbeat handling for stale connection cleanup
 
 ## Requirements
 
-- Go 1.21.5 or later
+- Go 1.21 or later
 
-## Installation
+## Running
 
-\`\`\`bash
-# Clone the repository
-git clone <repository-url>
-cd websocket-server
+```bash
+go run ./src
+```
 
-# Install dependencies
-go mod download
+By default the server loads `local_settings.yaml`. Override that path with:
 
-# Build the server
-go build -o engage-notifications .
-\`\`\`
+```bash
+CONFIG_PATH=/path/to/settings.yaml go run ./src
+```
 
-## Running the Server
+## HTTP API
 
-\`\`\`bash
-# Run directly
-go run ./engage-notifications/src
+### `POST /send`
 
-## API Documentation
+Headers:
 
-### WebSocket Connection
+- `X-API-Key: <api key>`
+- `Content-Type: application/json`
 
-Connect to the WebSocket server:
+Request body:
 
-\`\`\`
-GET /ws?team_id=<team_id>&user_id=<user_id>
-\`\`\`
-
-Parameters:
-- `team_id`: The team ID the user belongs to
-- `user_id`: The user's ID
-
-### Send Message Endpoint
-
-Send a message to a specific user or broadcast to a team:
-
-\`\`\`
-POST /send
-\`\`\`
-
-Request Body:
-\`\`\`json
+```json
 {
-  "target_team_id": "team123",
-  "sender_user_id": "sender456",
-  "target_user_id": "recipient789",
-  "message_type": "notification",
-  "content": "Hello, this is a test message",
+  "notification_id": "notif-123",
+  "target_team_id": "team-123",
+  "target_user_id": "user-456",
+  "sender_user_id": "system",
+  "message_type": "system_alert",
+  "body": "Hello from the backend",
   "broadcast": false
 }
-\`\`\`
+```
 
-Parameters:
-- `target_team_id`: The team ID
-- `sender_user_id`: The sender's user ID
-- `target_user_id`: (Optional) The recipient's user ID
-- `message_type`: Type of message
-- `content`: Message content
-- `broadcast`: If true, sends to all users in the team (ignores target_user_id)
+Rules:
+
+- `broadcast: false` sends to `target_user_id`.
+- `broadcast: false` with `target_team_id` sends to that user in that team only.
+- `broadcast: false` without `target_team_id` sends to every connected session for that user across all teams.
+- `broadcast: true` with `target_team_id` broadcasts to all connected users in that team.
+- `broadcast: true` without `target_team_id` broadcasts to all connected users in all teams.
 
 Response:
-\`\`\`json
+
+```json
 {
   "success": true,
   "delivered": 1
 }
+```
+
+### `GET /health`
+
+Returns basic hub health:
+
+```json
+{
+  "status": "healthy",
+  "message": "WebSocket server is running",
+  "total_teams": 2,
+  "total_clients": 8
+}
+```
+
+## WebSocket API
+
+### Connect
+
+Open a websocket to:
+
+```text
+GET /ws
+```
+
+The first websocket message must be an auth payload:
+
+```json
+{
+  "type": "auth",
+  "teamId": "team-123",
+  "token": "<jwt>"
+}
+```
+
+The backend auth response for that JWT must include the user's current `selectedTeam`, and it must match the requested `teamId`. The server accepts either:
+
+- `settings: { "selectedTeam": "team-123" }`
+- `selectedTeam: "team-123"`
+
+For local development with fake auth enabled, use `token: "fake_development_token"` and include `userId`.
+
+Successful auth response:
+
+```json
+{
+  "type": "authSuccess",
+  "message": "Successfully authenticated"
+}
+```
+
+Auth failure response:
+
+```json
+{
+  "type": "auth_error",
+  "message": "invalid JWT token provided"
+}
+```
+
+After authentication, clients do not send application messages. The server only pushes notification payloads to authenticated sockets.
+
+Delivered notification payload:
+
+```json
+{
+  "notificationId": "notif-123",
+  "targetTeamId": "team-123",
+  "targetUserId": "user-456",
+  "senderUserId": "system",
+  "messageType": "system_alert",
+  "body": "Hello from the backend",
+  "timestamp": 1775237123456
+}
+```

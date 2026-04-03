@@ -20,68 +20,92 @@ func TestHandleSendMessage(t *testing.T) {
 	hub := newHub() // Using a real hub instance is fine here
 
 	testCases := []struct {
-		name           string
-		requestBody    string
-		expectedStatus int
-		expectedBody   string
-		expectBroadcast bool
+		name             string
+		requestBody      string
+		expectedStatus   int
+		expectedBody     string
+		expectBroadcast  bool
 		expectSendToUser bool
 	}{
 		{
-			name:           "Success - Global Broadcast Message",
-			requestBody:    `{"message_type": "system_alert", "body": "server is restarting", "broadcast": true}`,
-			expectedStatus: http.StatusOK,
-			expectedBody:   `"delivered":1`,
-			expectBroadcast: true,
+			name:             "Success - Global Broadcast Message",
+			requestBody:      `{"message_type": "system_alert", "body": "server is restarting", "broadcast": true}`,
+			expectedStatus:   http.StatusOK,
+			expectedBody:     `"delivered":1`,
+			expectBroadcast:  true,
 			expectSendToUser: false,
 		},
 		{
-			name:           "Success - Team Broadcast Message",
-			requestBody:    `{"target_team_id": "team-1", "message_type": "system_alert", "body": "team announcement", "broadcast": true}`,
-			expectedStatus: http.StatusOK,
-			expectedBody:   `"delivered":1`,
-			expectBroadcast: true,
+			name:             "Success - Team Broadcast Message",
+			requestBody:      `{"target_team_id": "team-1", "message_type": "system_alert", "body": "team announcement", "broadcast": true}`,
+			expectedStatus:   http.StatusOK,
+			expectedBody:     `"delivered":1`,
+			expectBroadcast:  true,
 			expectSendToUser: false,
 		},
 		{
-			name:           "Success - User-Specific Message",
-			requestBody:    `{"target_team_id": "team-1", "target_user_id": "user-1", "message_type": "user_message", "body": "hello there"}`,
-			expectedStatus: http.StatusOK,
-			expectedBody:   `"delivered":1`,
-			expectBroadcast: false,
+			name:             "Success - User-Specific Message",
+			requestBody:      `{"target_team_id": "team-1", "target_user_id": "user-1", "message_type": "user_message", "body": "hello there"}`,
+			expectedStatus:   http.StatusOK,
+			expectedBody:     `"delivered":1`,
+			expectBroadcast:  false,
 			expectSendToUser: true,
 		},
 		{
-			name:           "Failure - Invalid JSON",
-			requestBody:    `{"target_team_id": "team-1",...}`,
-			expectedStatus: http.StatusBadRequest,
-			expectedBody:   `Invalid JSON`,
-			expectBroadcast: false,
+			name:             "Failure - Invalid JSON",
+			requestBody:      `{"target_team_id": "team-1",...}`,
+			expectedStatus:   http.StatusBadRequest,
+			expectedBody:     `invalid character '.'`,
+			expectBroadcast:  false,
 			expectSendToUser: false,
 		},
 		{
-			name:           "Failure - Missing MessageType",
-			requestBody:    `{"target_team_id": "team-1", "target_user_id": "user-1"}`,
-			expectedStatus: http.StatusBadRequest,
-			expectedBody:   `Missing required field: MessageType`,
-			expectBroadcast: false,
+			name:             "Failure - Missing MessageType",
+			requestBody:      `{"target_team_id": "team-1", "target_user_id": "user-1"}`,
+			expectedStatus:   http.StatusBadRequest,
+			expectedBody:     `missing required field: message_type`,
+			expectBroadcast:  false,
 			expectSendToUser: false,
 		},
 		{
-			name:           "Failure - Conflicting Broadcast and UserID",
-			requestBody:    `{"broadcast": true, "target_user_id": "user-1", "message_type": "test"}`,
-			expectedStatus: http.StatusBadRequest,
-			expectedBody:   `Cannot specify TargetUserID when Broadcast is true`, // Updated error message
-			expectBroadcast: false,
+			name:             "Failure - Conflicting Broadcast and UserID",
+			requestBody:      `{"broadcast": true, "target_user_id": "user-1", "message_type": "test", "body": "hello"}`,
+			expectedStatus:   http.StatusBadRequest,
+			expectedBody:     `cannot specify target_user_id when broadcast is true`,
+			expectBroadcast:  false,
 			expectSendToUser: false,
 		},
 		{
-			name:           "Failure - Missing Target for Non-Broadcast",
-			requestBody:    `{"message_type": "test"}`,
-			expectedStatus: http.StatusBadRequest,
-			expectedBody:   `Must specify a TeamID and TargetUserID for non-broadcast messages`,
-			expectBroadcast: false,
+			name:             "Failure - Content Alias No Longer Accepted",
+			requestBody:      `{"target_team_id": "team-1", "target_user_id": "user-1", "message_type": "user_message", "content": "hello alias"}`,
+			expectedStatus:   http.StatusBadRequest,
+			expectedBody:     `unknown field "content"`,
+			expectBroadcast:  false,
 			expectSendToUser: false,
+		},
+		{
+			name:             "Failure - Missing Target for Non-Broadcast",
+			requestBody:      `{"message_type": "test"}`,
+			expectedStatus:   http.StatusBadRequest,
+			expectedBody:     `missing required field: body`,
+			expectBroadcast:  false,
+			expectSendToUser: false,
+		},
+		{
+			name:             "Failure - Missing Team and User for Non-Broadcast",
+			requestBody:      `{"message_type": "test", "body": "hello"}`,
+			expectedStatus:   http.StatusBadRequest,
+			expectedBody:     `must specify target_user_id for non-broadcast messages`,
+			expectBroadcast:  false,
+			expectSendToUser: false,
+		},
+		{
+			name:             "Success - Teamless Direct Message",
+			requestBody:      `{"target_user_id": "user-1", "message_type": "user_message", "body": "hello direct"}`,
+			expectedStatus:   http.StatusOK,
+			expectedBody:     `"delivered":1`,
+			expectBroadcast:  false,
+			expectSendToUser: true,
 		},
 	}
 
@@ -115,6 +139,49 @@ func TestHandleSendMessage(t *testing.T) {
 	}
 }
 
+func TestDecodeAuthMessage(t *testing.T) {
+	testCases := []struct {
+		name      string
+		body      string
+		expectErr bool
+	}{
+		{
+			name:      "valid auth payload",
+			body:      `{"type":"auth","teamId":" team-1 ","token":" token ","userId":" user-1 "}`,
+			expectErr: false,
+		},
+		{
+			name:      "unknown field rejected",
+			body:      `{"type":"auth","teamId":"team-1","token":"token","admin":true}`,
+			expectErr: true,
+		},
+		{
+			name:      "multiple json values rejected",
+			body:      `{"type":"auth","teamId":"team-1","token":"token"} {"type":"auth"}`,
+			expectErr: true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			authMsg, err := decodeAuthMessage([]byte(tc.body))
+			if tc.expectErr {
+				if err == nil {
+					t.Fatal("expected an error but got nil")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if authMsg.TeamID != "team-1" || authMsg.Token != "token" || authMsg.UserID != "user-1" {
+				t.Fatalf("expected normalized auth payload, got %+v", authMsg)
+			}
+		})
+	}
+}
+
 // TestHandleWebSocket tests the WebSocket upgrade and initial auth flow.
 func TestHandleWebSocket(t *testing.T) {
 	setupTestAppConfig()
@@ -136,6 +203,7 @@ func TestHandleWebSocket(t *testing.T) {
 	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// This mock handler simulates the real handleWebSocket but with mocked authentication.
+		upgrader := newUpgrader()
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return

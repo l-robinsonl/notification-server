@@ -2,7 +2,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -11,54 +13,82 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  0, // Will be set from config
-	WriteBufferSize: 0, // Will be set from config
-	CheckOrigin: func(r *http.Request) bool {
-		origin := r.Header.Get("Origin")
-		
-		// Environment-aware origin checking
-		if ShouldAllowAllOrigins() {
-			if IsDevelopment() {
-				log.Printf("🧪 DEV: Allowing origin %s (development mode)", origin)
-			} else {
-				log.Printf("⚠️  WARNING: Allowing all origins in production!")
+func newUpgrader() websocket.Upgrader {
+	return websocket.Upgrader{
+		ReadBufferSize:  AppConfig.WebSocket.BufferSize.Read,
+		WriteBufferSize: AppConfig.WebSocket.BufferSize.Write,
+		CheckOrigin: func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+
+			if ShouldAllowAllOrigins() {
+				if IsDevelopment() {
+					log.Printf("🧪 DEV: Allowing origin %s (development mode)", origin)
+				} else {
+					log.Printf("⚠️  WARNING: Allowing all origins in production!")
+				}
+				return true
 			}
-			return true
-		}
-		
-		// Production-safe origin checking
-		return IsOriginAllowed(origin)
-	},
+
+			return IsOriginAllowed(origin)
+		},
+	}
 }
 
-func initUpgrader() {
-	if AppConfig == nil {
-		log.Fatal("Config must be loaded before initializing upgrader")
+func writeWebSocketAuthError(conn Conn, message string) {
+	_ = conn.SetWriteDeadline(time.Now().Add(AppConfig.WebSocket.WriteWait))
+	if err := conn.WriteJSON(map[string]string{
+		"type":    "auth_error",
+		"message": message,
+	}); err != nil {
+		log.Printf("failed to send websocket auth error: %v", err)
 	}
-	
-	upgrader.ReadBufferSize = AppConfig.WebSocket.BufferSize.Read
-	upgrader.WriteBufferSize = AppConfig.WebSocket.BufferSize.Write
-	
-	if IsDevelopment() {
-		log.Printf("🧪 WebSocket upgrader initialized for DEVELOPMENT")
-		log.Printf("🧪 CORS policy: %s", func() string {
-			if ShouldAllowAllOrigins() {
-				return "Allow all origins"
-			}
-			return "Restricted origins only"
-		}())
-	} else {
-		log.Printf("🔒 WebSocket upgrader initialized for PRODUCTION")
-		log.Printf("🔒 CORS policy: Restricted to allowed origins only")
+}
+
+func decodeMessageRequest(body []byte) (*MessageRequest, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+
+	var req MessageRequest
+	if err := decoder.Decode(&req); err != nil {
+		return nil, err
 	}
+
+	var extra struct{}
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, errors.New("request body must contain a single JSON object")
+	}
+
+	req.Normalize()
+	if err := req.Validate(); err != nil {
+		return nil, err
+	}
+
+	return &req, nil
+}
+
+func decodeAuthMessage(body []byte) (*AuthMessage, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+
+	var authMsg AuthMessage
+	if err := decoder.Decode(&authMsg); err != nil {
+		return nil, err
+	}
+
+	var extra struct{}
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, errors.New("auth payload must contain a single JSON object")
+	}
+
+	authMsg.Normalize()
+	return &authMsg, nil
 }
 
 // handleWebSocket handles WebSocket connections
 func handleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
-	// Ensure upgrader is configured
-	if upgrader.ReadBufferSize == 0 {
-		initUpgrader()
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
 
 	// Check if we can accept more clients (optional global limit)
@@ -71,6 +101,7 @@ func handleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Upgrade HTTP connection to WebSocket
+	upgrader := newUpgrader()
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("❌ Failed to upgrade connection: %v", err)
@@ -79,13 +110,13 @@ func handleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 	// Create a new client
 	client := &Client{
-		hub:      hub,
-		conn:     conn,
-		send:     make(chan []byte, AppConfig.Limits.SendChannelBuffer),
-		isActive: true,
+		hub:  hub,
+		conn: conn,
+		send: make(chan []byte, AppConfig.Limits.SendChannelBuffer),
 	}
 
 	// Set initial read deadline for authentication
+	conn.SetReadLimit(AppConfig.WebSocket.AuthMaxMessageSize)
 	conn.SetReadDeadline(time.Now().Add(AppConfig.WebSocket.ReadDeadline))
 
 	// First message MUST be authentication
@@ -96,29 +127,25 @@ func handleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("📨 Received auth message: %s", message)
-
-	var authMsg AuthMessage
-	if err := json.Unmarshal(message, &authMsg); err != nil {
+	authMsg, err := decodeAuthMessage(message)
+	if err != nil {
 		log.Printf("❌ Failed to unmarshal auth message: %v", err)
-		log.Printf("❌ Raw bytes: %v", message)
+		writeWebSocketAuthError(conn, "Invalid auth payload")
 		conn.Close()
 		return
 	}
 
 	if authMsg.Type != "auth" {
 		log.Printf("❌ Wrong message type: got '%s', expected 'auth'", authMsg.Type)
+		writeWebSocketAuthError(conn, "First websocket message must be auth")
 		conn.Close()
 		return
 	}
 
 	// Authenticate the client
-	if err := client.authenticate(authMsg); err != nil {
+	if err := client.authenticate(*authMsg); err != nil {
 		log.Printf("❌ Authentication failed: %v", err)
-		conn.WriteJSON(map[string]interface{}{
-			"type":    "auth_error",
-			"message": err.Error(),
-		})
+		writeWebSocketAuthError(conn, err.Error())
 		conn.Close()
 		return
 	}
@@ -126,10 +153,7 @@ func handleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	// Check team-specific client limits
 	if !hub.canAddClient(client.teamID) {
 		log.Printf("❌ Team client limit reached for team %s", client.teamID)
-		conn.WriteJSON(map[string]interface{}{
-			"type":    "auth_error",
-			"message": "Team client limit reached",
-		})
+		writeWebSocketAuthError(conn, "Team client limit reached")
 		conn.Close()
 		return
 	}
@@ -138,6 +162,7 @@ func handleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	hub.register <- client
 
 	// Send success response
+	_ = conn.SetWriteDeadline(time.Now().Add(AppConfig.WebSocket.WriteWait))
 	conn.WriteJSON(map[string]interface{}{
 		"type":    "authSuccess",
 		"message": "Successfully authenticated",
@@ -155,6 +180,14 @@ func handleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
 
 // handleSendMessage handles the REST endpoint for sending messages
 func handleSendMessage(hub *Hub, w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, AppConfig.WebSocket.MaxMessageSize)
+	defer r.Body.Close()
+
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		log.Printf("❌ Error reading request body: %v", err)
@@ -162,36 +195,26 @@ func handleSendMessage(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("📨 Request body: %s", string(body))
-
-	var req MessageRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	req, err := decodeMessageRequest(body)
+	if err != nil {
 		log.Printf("❌ Invalid JSON: %v", err)
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		switch {
+		case errors.Is(err, io.EOF):
+			http.Error(w, "Request body is required", http.StatusBadRequest)
+		default:
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		}
 		return
 	}
 
-	if req.MessageType == "" {
-		http.Error(w, "Missing required field: MessageType", http.StatusBadRequest)
-		return
-	}
-
-	if req.Broadcast {
-			// For broadcasts, TargetUserID is not allowed (broadcasts can't target individual users)
-			if req.TargetUserID != "" {
-					http.Error(w, "Cannot specify TargetUserID when Broadcast is true", http.StatusBadRequest)
-					return
-			}
-			// TargetTeamID is optional for broadcasts:
-			// - Empty TargetTeamID = Global broadcast (all teams)
-			// - Specified TargetTeamID = Team broadcast (specific team only)
-	} else {
-			// If it's not a broadcast, a TeamID and UserID are required for direct messages
-			if req.TargetTeamID == "" || req.TargetUserID == "" {
-					http.Error(w, "Must specify a TeamID and TargetUserID for non-broadcast messages", http.StatusBadRequest)
-					return
-			}
-	}
+	log.Printf(
+		"📨 send request: type=%s broadcast=%t team=%s target_user=%s body_bytes=%d",
+		req.MessageType,
+		req.Broadcast,
+		req.TargetTeamID,
+		req.TargetUserID,
+		len(req.Body),
+	)
 
 	// Create the message
 	message := NewMessage(req.NotificationID, req.TargetTeamID, req.TargetUserID, req.SenderUserID, req.MessageType, req.Body)
@@ -219,13 +242,11 @@ func handleSendMessage(hub *Hub, w http.ResponseWriter, r *http.Request) {
 			log.Printf("🌍 Global broadcast message: %d recipients across all teams", delivered)
 		}
 	} else {
-		// Send to specific user in specific team
-		success = hub.sendToUser(req.TargetTeamID, req.TargetUserID, messageJSON)
+		// Send to a specific user. If no team is provided, deliver to all connected sessions for that user.
+		delivered = hub.sendToUser(req.TargetTeamID, req.TargetUserID, messageJSON)
+		success = delivered > 0
 		if success {
-			delivered = 1
-			log.Printf("📤 Message sent to user %s in team %s", req.TargetUserID, req.TargetTeamID)
-		} else {
-			log.Printf("❌ Failed to send message to user %s in team %s (user not connected)", req.TargetUserID, req.TargetTeamID)
+			log.Printf("📤 Message sent to user %s in team %s (%d recipients)", req.TargetUserID, req.TargetTeamID, delivered)
 		}
 	}
 

@@ -2,76 +2,58 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"time"
 )
 
-
-// Notification types
-const (
-    SystemAlert        = "system_alert"
-    SystemNotification = "system_notification"
-    UserMessage        = "user_message"
-    AIResponse         = "ai_response"
-)
-
 type AuthMessage struct {
-  Type   string `json:"type"`
-  UserID string    `json:"userId"`
-  TeamID string `json:"teamId"`
-  Token  string `json:"token"`
-	DisplayName string `json:"displayName,omitempty"`
+	Type   string `json:"type"`
+	UserID string `json:"userId"`
+	TeamID string `json:"teamId"`
+	Token  string `json:"token"`
 }
 
-type UserData struct {
-  ID          int    `json:"id"`
-  Email       string `json:"email"`
-
+func (a *AuthMessage) Normalize() {
+	a.Type = strings.TrimSpace(a.Type)
+	a.UserID = strings.TrimSpace(a.UserID)
+	a.TeamID = strings.TrimSpace(a.TeamID)
+	a.Token = strings.TrimSpace(a.Token)
 }
 
-// Message represents a message sent between clients 
+// Message represents a notification delivered to websocket clients.
 type Message struct {
-	NotificationID string `json:"notificationId"` 
-	TargetTeamID      string `json:"targetTeamId"`
-	TargetUserID string `json:"targetUserId"` 
-	SenderUserID      string `json:"senderUserId"` 
-	MessageType string `json:"messageType"`
-	Body     string `json:"body"`
-	Timestamp   int64  `json:"timestamp"`
-}
-
-// MessageForREST represents the same message structure but with snake_case JSON tags for REST webhook
-type MessageForREST struct {
-	NotificationID string `json:"notification_id"` 
-	TargetTeamID      string `json:"target_team_id"`
-	TargetUserID string `json:"target_user_id"` 
-	SenderUserID      string `json:"sender_user_id"` 
-	MessageType string `json:"message_type"`
-	Body     string `json:"body"`
-	Timestamp   int64  `json:"timestamp"`
+	NotificationID string `json:"notificationId"`
+	TargetTeamID   string `json:"targetTeamId"`
+	TargetUserID   string `json:"targetUserId"`
+	SenderUserID   string `json:"senderUserId"`
+	MessageType    string `json:"messageType"`
+	Body           string `json:"body"`
+	Timestamp      int64  `json:"timestamp"`
 }
 
 // NewMessage creates a new message with the current timestamp
-func NewMessage(NotificationID, TargetTeamID, TargetUserID, SenderUserID, MessageType, Body string) *Message {
+func NewMessage(notificationID, targetTeamID, targetUserID, senderUserID, messageType, body string) *Message {
 	return &Message{
-		NotificationID: NotificationID,
-		TargetTeamID: TargetTeamID,
-		TargetUserID: TargetUserID, 
-		SenderUserID: SenderUserID, 
-		MessageType: MessageType,
-		Body:     Body,
-		Timestamp:   time.Now().UnixNano() / int64(time.Millisecond),
+		NotificationID: notificationID,
+		TargetTeamID:   targetTeamID,
+		TargetUserID:   targetUserID,
+		SenderUserID:   senderUserID,
+		MessageType:    messageType,
+		Body:           body,
+		Timestamp:      time.Now().UnixMilli(),
 	}
 }
 
 // MessageRequest represents the incoming REST API request
 type MessageRequest struct {
 	NotificationID string `json:"notification_id"` // Unique ID for the notification
-	TargetTeamID       string `json:"target_team_id"`
-	SenderUserID       string `json:"sender_user_id"`       // Sender user ID
-	TargetUserID string `json:"target_user_id"` // Optional: specific user to send to
-	MessageType  string `json:"message_type"`
-	Body      string `json:"body"`
-	Broadcast    bool   `json:"broadcast"` // Whether to broadcast to the entire team
+	TargetTeamID   string `json:"target_team_id"`
+	SenderUserID   string `json:"sender_user_id"` // Sender user ID
+	TargetUserID   string `json:"target_user_id"`
+	MessageType    string `json:"message_type"`
+	Body           string `json:"body"`
+	Broadcast      bool   `json:"broadcast"`
 }
 
 // ToJSON converts a message to JSON bytes (camelCase for WebSocket)
@@ -79,23 +61,34 @@ func (m *Message) ToJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
-// ToRESTJSON converts a message to JSON bytes with snake_case for REST webhook responses
-func (m *Message) ToRESTJSON() ([]byte, error) {
-	restMsg := MessageForREST{
-		NotificationID: m.NotificationID,
-		TargetTeamID: m.TargetTeamID,
-		TargetUserID: m.TargetUserID,
-		SenderUserID: m.SenderUserID,
-		MessageType: m.MessageType,
-		Body: m.Body,
-		Timestamp: m.Timestamp,
-	}
-	return json.Marshal(restMsg)
+func (r *MessageRequest) Normalize() {
+	r.NotificationID = strings.TrimSpace(r.NotificationID)
+	r.TargetTeamID = strings.TrimSpace(r.TargetTeamID)
+	r.SenderUserID = strings.TrimSpace(r.SenderUserID)
+	r.TargetUserID = strings.TrimSpace(r.TargetUserID)
+	r.MessageType = strings.TrimSpace(r.MessageType)
+	r.Body = strings.TrimSpace(r.Body)
 }
 
-// FromJSON parses JSON bytes into a MessageRequest
-func MessageRequestFromJSON(data []byte) (*MessageRequest, error) {
-	var req MessageRequest
-	err := json.Unmarshal(data, &req)
-	return &req, err
+func (r *MessageRequest) Validate() error {
+	if r.MessageType == "" {
+		return errors.New("missing required field: message_type")
+	}
+
+	if strings.TrimSpace(r.Body) == "" {
+		return errors.New("missing required field: body")
+	}
+
+	if r.Broadcast {
+		if r.TargetUserID != "" {
+			return errors.New("cannot specify target_user_id when broadcast is true")
+		}
+		return nil
+	}
+
+	if r.TargetUserID == "" {
+		return errors.New("must specify target_user_id for non-broadcast messages")
+	}
+
+	return nil
 }

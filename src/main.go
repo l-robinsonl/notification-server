@@ -2,24 +2,39 @@
 package main
 
 import (
+	"crypto/subtle"
+	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 var httpClient *http.Client
+var requestRateLimiter *ipRateLimiter
+
+type healthResponse struct {
+	Status       string `json:"status"`
+	Message      string `json:"message"`
+	TotalTeams   int    `json:"total_teams"`
+	TotalClients int    `json:"total_clients"`
+}
 
 // Middleware functions
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		
+
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+
 		// Check if origin is allowed
-		if IsOriginAllowed(origin) {
+		if origin != "" && IsOriginAllowed(origin) {
+			w.Header().Add("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 		}
-		
+
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
 
@@ -36,8 +51,9 @@ func apiKeyMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Check for API key in header
 		apiKey := r.Header.Get("X-API-Key")
-		if apiKey != AppConfig.Security.APIKey {
-			log.Printf("Invalid API key attempt: %s", apiKey)
+		expectedAPIKey := AppConfig.Security.APIKey
+		if subtle.ConstantTimeCompare([]byte(apiKey), []byte(expectedAPIKey)) != 1 {
+			log.Printf("Invalid API key attempt from %s", r.RemoteAddr)
 			http.Error(w, "Invalid API key", http.StatusUnauthorized)
 			return
 		}
@@ -47,8 +63,16 @@ func apiKeyMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 func rateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Add rate limiting logic here
-		// For now, just pass through
+		if requestRateLimiter != nil && r.URL.Path != "/health" {
+			clientIP := clientIPFromRequest(r)
+			if !requestRateLimiter.Allow(clientIP) {
+				log.Printf("rate limit exceeded for %s on %s", clientIP, r.URL.Path)
+				w.Header().Set("Retry-After", "1")
+				http.Error(w, "Too many requests", http.StatusTooManyRequests)
+				return
+			}
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -68,6 +92,12 @@ func main() {
 	httpClient = &http.Client{
 		Timeout: AppConfig.Backend.Timeout,
 	}
+	requestRateLimiter = newIPRateLimiter(
+		AppConfig.RateLimit.RequestsPerSecond,
+		AppConfig.RateLimit.Burst,
+		AppConfig.RateLimit.EntryTTL,
+		AppConfig.RateLimit.CleanupInterval,
+	)
 
 	// Initialize the hub
 	hub := newHub()
@@ -85,29 +115,31 @@ func main() {
 		handleSendMessage(hub, w, r)
 	})))
 
-	// Enhanced health check endpoint
+	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		health := hub.healthCheck()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		
-		// Simple JSON response
-		response := `{
-			"status": "healthy",
-			"message": "WebSocket server is running",
-			"total_teams": ` + string(rune(health["total_teams"].(int))) + `,
-			"total_clients": ` + string(rune(health["total_clients"].(int))) + `
-		}`
-		w.Write([]byte(response))
+
+		if err := json.NewEncoder(w).Encode(healthResponse{
+			Status:       "healthy",
+			Message:      "WebSocket server is running",
+			TotalTeams:   health.TotalTeams,
+			TotalClients: health.TotalClients,
+		}); err != nil {
+			log.Printf("failed to encode health response: %v", err)
+		}
 	})
 
 	// Configure the server with values from config
 	server := &http.Server{
-		Addr:         ":" + AppConfig.Server.Port,
-		Handler:      rateLimitMiddleware(mux),
-		ReadTimeout:  AppConfig.Server.ReadTimeout,
-		WriteTimeout: AppConfig.Server.WriteTimeout,
-		IdleTimeout:  AppConfig.Server.IdleTimeout,
+		Addr:              ":" + AppConfig.Server.Port,
+		Handler:           rateLimitMiddleware(mux),
+		ReadTimeout:       AppConfig.Server.ReadTimeout,
+		ReadHeaderTimeout: 5 * time.Second,
+		WriteTimeout:      AppConfig.Server.WriteTimeout,
+		IdleTimeout:       AppConfig.Server.IdleTimeout,
+		MaxHeaderBytes:    1 << 20,
 	}
 
 	// Log startup information
@@ -133,7 +165,7 @@ func main() {
 	log.Printf("===============================================")
 
 	// Start the server
-	if err := server.ListenAndServe(); err != nil {
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
